@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"
+        android:maxSdkVersion="29" />
+    <!-- Location is NOT requested by the SDK. Tier 1 reads last-known
+         location only if the HOST APP already holds the permission. -->
+</manifest>

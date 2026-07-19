@@ -1,0 +1,102 @@
+# Fraud Ingest Server — Go
+
+Go port of [`../fraud-ingest-server`](../fraud-ingest-server) (Node),
+the canonical/production implementation and the backend the Verawall
+console runs against. Same Postgres schema, same wire contracts, same
+scoring weights. The Node server is **frozen** as the SDK wire-format
+reference and conformance harness; the console-only additions here
+(analyst invitations + MFA) exist in Go only.
+
+## Conformance
+
+The Node simulator is the acceptance suite. The nine core scenarios must
+pass unchanged, plus the Go-only `invite` scenario:
+
+    createdb vera_fraud                    # once, shared with the Node server
+    go build -o vera-go . && PORT=8080 ./vera-go
+    cd ../fraud-ingest-server
+    node simulate-sdk.js all    http://localhost:8080   # 9 core scenarios
+    node simulate-sdk.js invite http://localhost:8080   # invitations + MFA (Go only)
+
+Covers: behavioral scoring (clean/coached/ato/mule), ledger-only
+detectors (feedmule, agent commission fraud), the action channel
+(webhook + device kill-switch + SDK ack protocol), analyst auth/RBAC
+(login, role probes, revocation, service-key limits), and the full
+invitation + TOTP lifecycle.
+
+## Console API additions (invitations & MFA)
+
+Beyond the shared console API (see the Node README), this server adds
+analyst onboarding with two-factor:
+
+    POST   /v1/console/team/invitations            {email, role}        (admin)
+    GET    /v1/console/team/invitations                                  (admin)
+    DELETE /v1/console/team/invitations/{token}                          (admin)
+    POST   /v1/console/team/invitations/{token}/resend                   (admin)
+    GET    /v1/console/invitations/{token}          public: context + otpauthUri
+    POST   /v1/console/invitations/{token}/accept   public: {name, password, code}
+
+Read-only console views derived from stored data:
+
+    GET /v1/console/detections?days=30    alert counts per threat type
+    GET /v1/console/transaction-risk      recent /score decisions + auth mix
+    GET /v1/console/activity?limit=8       unified alerts/actions/cases feed
+
+- An invitation mints a TOTP secret; the invitee scans the `otpauthUri`
+  QR (or types the base32 key) and proves a code before the account is
+  created. The secret moves onto the analyst row at acceptance.
+- `POST /v1/console/login` gains a `code` field: when the analyst has a
+  TOTP secret, the server answers `401 {"error":"mfa_required",
+  "mfaRequired":true}` until a valid code is supplied. Accounts without
+  a secret (bootstrap admin, service keys) are unaffected.
+- TOTP is RFC 6238 (SHA-1/30s/6 digits, ±1 window) in `totp.go`,
+  mirroring the console's former client module.
+
+## Serving the console
+
+The Vite console (`../../verawall`) talks to this server via
+`VITE_API_BASE`. CORS is enabled on `/v1/console/*` only:
+
+    CORS_ORIGIN=http://localhost:5199,http://localhost:5173   # default
+
+Seed demo data (alerts/cases/ledger) into an empty DB by running the
+conformance suite once against a live server, then open the console and
+sign in as the bootstrap admin.
+
+## Layout
+
+    main.go           config, routing, startup, schema apply, admin seed
+    ingest.go         /v1/events  /v1/transactions  /v1/score  /stats
+    console.go        console API: login (+MFA), RBAC routes, invitations, webhook
+    scoring.go        scoring engine — pure logic, mirrors Node scoring.js
+    store.go          ingest/scoring-context/feed SQL (pgx)
+    store_console.go  alerts/cases/actions/profiles/analyst-auth/invitations SQL
+    totp.go           RFC 6238 TOTP (stdlib), for invitation MFA enrollment
+    util.go           HMAC, session-token verify, helpers
+    schema.sql        shared with ../fraud-ingest-server — keep in sync
+
+Deps: `pgx/v5`, `golang.org/x/crypto` (scrypt). Everything else stdlib.
+
+## Config (env)
+
+    DATABASE_URL            postgres://localhost/vera_fraud
+    PORT                    8080
+    CORE_WEBHOOK            http://localhost:8090/core-banking/hooks
+    CONSOLE_KEY             dev-console-key   (service key, senior-level)
+    CONSOLE_ADMIN_EMAIL     admin@demobank.cz (bootstrap admin, first boot)
+    CONSOLE_ADMIN_PASSWORD  admin-dev-password
+
+Tenant HMAC keys live in `main.go` (`TENANTS`) for now, like the Node
+server — move to secret storage before production.
+
+## Parity notes
+
+- Password hashes are portable: scrypt N=16384 r=8 p=1, salt used as its
+  hex-string bytes — exactly Node's `crypto.scryptSync` defaults, so
+  analysts created by either server can log in through the other.
+- Endpoint semantics, policy bands (55/85), detector thresholds, RBAC
+  ranks and webhook/retry behavior mirror the Node server; consult its
+  [README](../fraud-ingest-server/README.md) for the full API reference.
+- Webhook retries are still in-process (goroutines) — persisting and
+  re-scheduling them at startup is the first production hardening TODO,
+  along with per-tenant key management and horizontal-scale review.
