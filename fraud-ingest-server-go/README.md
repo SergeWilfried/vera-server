@@ -42,6 +42,19 @@ Read-only console views derived from stored data:
     GET /v1/console/transaction-risk      recent /score decisions + auth mix
     GET /v1/console/activity?limit=8       unified alerts/actions/cases feed
 
+Tenant settings + API keys:
+
+    GET   /v1/console/settings            defaults + stored overrides + derived facts
+    PATCH /v1/console/settings            (admin) persist notifications/modules/tenant
+    GET   /v1/console/api-keys            (admin) list, masked prefix••••last4
+    POST  /v1/console/api-keys            (admin) {name, scope} -> full key ONCE
+    DELETE /v1/console/api-keys/{id}      (admin) revoke
+
+Generated keys (`tm_live_…`) are functional: stored as a sha256 hash,
+they authenticate the console/ingest API via the same bearer path —
+scope `read` acts read-only, `read/write` acts at senior rank — and
+each use bumps `last_used_at`.
+
 - An invitation mints a TOTP secret; the invitee scans the `otpauthUri`
   QR (or types the base32 key) and proves a code before the account is
   created. The secret moves onto the analyst row at acceptance.

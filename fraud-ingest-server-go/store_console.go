@@ -4,8 +4,10 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -625,6 +627,177 @@ func (s *Server) listAnalysts(ctx context.Context, tenantID string) ([]map[strin
 		`SELECT id, email, name, role, disabled, created_at,
 		        (totp_secret IS NOT NULL) AS mfa_enrolled
 		 FROM analysts WHERE tenant_id=$1 ORDER BY created_at`, tenantID)
+}
+
+// ---------- tenant settings ----------
+
+// Default console settings for a tenant with no stored overrides.
+func defaultSettings() map[string]any {
+	return map[string]any{
+		"tenant": map[string]any{
+			"name": "Demo Bank", "environment": "Production", "dataRegion": "EU (Frankfurt)",
+			"dataRetention": "13 months", "platformVersion": "BIP 8.4.2",
+		},
+		"notifications": map[string]any{
+			"digest": true, "webhook": true, "sms": true, "weekly": true,
+		},
+		"modules": map[string]any{
+			"bip": true, "scamflag": true, "insights": true, "fraudintel": true, "cffc": true,
+		},
+		"integrations": []any{
+			map[string]any{"name": "Core banking API", "detail": "Payment holds & releases · v2.4", "status": "Connected", "ok": true},
+			map[string]any{"name": "3DS Access Control Server", "detail": "Step-up challenge routing", "status": "Connected", "ok": true},
+			map[string]any{"name": "SIEM export", "detail": "Splunk HEC · alerts & audit trail", "status": "Connected", "ok": true},
+			map[string]any{"name": "KYC / onboarding provider", "detail": "Document & liveness checks", "status": "Action needed", "ok": false},
+		},
+	}
+}
+
+// deepMerge overlays src onto dst (maps merged recursively, other values replaced).
+func deepMerge(dst, src map[string]any) map[string]any {
+	for k, v := range src {
+		if sm, ok := v.(map[string]any); ok {
+			if dm, ok := dst[k].(map[string]any); ok {
+				dst[k] = deepMerge(dm, sm)
+				continue
+			}
+		}
+		dst[k] = v
+	}
+	return dst
+}
+
+// getSettings merges stored overrides over defaults and adds derived,
+// read-only tenant facts (name, live session-ingestion counts).
+func (s *Server) getSettings(ctx context.Context, tenantID string) (map[string]any, error) {
+	merged := defaultSettings()
+	var raw []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT settings FROM tenant_settings WHERE tenant_id=$1`, tenantID).Scan(&raw)
+	if err == nil && len(raw) > 0 {
+		var stored map[string]any
+		if json.Unmarshal(raw, &stored) == nil {
+			merged = deepMerge(merged, stored)
+		}
+	} else if err != nil && err != pgx.ErrNoRows {
+		return nil, err
+	}
+
+	// Session-ingestion is a derived, read-only fact (events in the last 24h).
+	var perDay int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*)::int FROM events
+		 WHERE tenant_id=$1 AND received_at > now() - interval '24 hours'`,
+		tenantID).Scan(&perDay); err != nil {
+		return nil, err
+	}
+	tenant, _ := merged["tenant"].(map[string]any)
+	if tenant == nil {
+		tenant = map[string]any{}
+		merged["tenant"] = tenant
+	}
+	tenant["sessionIngestion"] = perDay
+	return merged, nil
+}
+
+// patchSettings merges a partial update into the stored overrides. Only
+// the writable sub-trees are accepted; derived tenant facts are ignored.
+func (s *Server) patchSettings(ctx context.Context, tenantID string, patch map[string]any) (map[string]any, error) {
+	var raw []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT settings FROM tenant_settings WHERE tenant_id=$1`, tenantID).Scan(&raw)
+	stored := map[string]any{}
+	if err == nil && len(raw) > 0 {
+		json.Unmarshal(raw, &stored)
+	} else if err != nil && err != pgx.ErrNoRows {
+		return nil, err
+	}
+	// Never persist derived tenant facts.
+	if t, ok := patch["tenant"].(map[string]any); ok {
+		delete(t, "tenant")
+		delete(t, "sessionIngestion")
+	}
+	stored = deepMerge(stored, patch)
+	blob, _ := json.Marshal(stored)
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO tenant_settings (tenant_id, settings, updated_at)
+		 VALUES ($1, $2, now())
+		 ON CONFLICT (tenant_id) DO UPDATE SET settings=$2, updated_at=now()`,
+		tenantID, string(blob)); err != nil {
+		return nil, err
+	}
+	return s.getSettings(ctx, tenantID)
+}
+
+// ---------- api keys ----------
+
+func hashKey(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Server) listApiKeys(ctx context.Context, tenantID string) ([]map[string]any, error) {
+	return queryMaps(ctx, s.pool,
+		`SELECT id, name, prefix, last4, scope, created_at, last_used_at,
+		        (revoked_at IS NOT NULL) AS revoked
+		 FROM api_keys WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+}
+
+// createApiKey mints a key, stores its hash, and returns the full secret
+// ONCE (never retrievable again).
+func (s *Server) createApiKey(ctx context.Context, tenantID, name, scope string) (map[string]any, string, error) {
+	if name == "" {
+		return nil, "a key name is required", nil
+	}
+	if scope != "read" && scope != "read/write" {
+		scope = "read"
+	}
+	rawBytes := make([]byte, 24)
+	if _, err := rand.Read(rawBytes); err != nil {
+		return nil, "", err
+	}
+	env := "tm_live_"
+	secret := env + hex.EncodeToString(rawBytes)
+	prefix := secret[:len(env)+4]
+	last4 := secret[len(secret)-4:]
+	var id string
+	if err := s.pool.QueryRow(ctx, `SELECT 'KEY-' || nextval('api_key_seq')`).Scan(&id); err != nil {
+		return nil, "", err
+	}
+	row, err := queryMap(ctx, s.pool,
+		`INSERT INTO api_keys (id, tenant_id, name, prefix, last4, key_hash, scope)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 RETURNING id, name, prefix, last4, scope, created_at, last_used_at,
+		           false AS revoked`,
+		id, tenantID, name, prefix, last4, hashKey(secret), scope)
+	if err != nil {
+		return nil, "", err
+	}
+	row["key"] = secret // one-time reveal
+	return row, "", nil
+}
+
+func (s *Server) revokeApiKey(ctx context.Context, tenantID, id string) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE api_keys SET revoked_at=now()
+		 WHERE tenant_id=$1 AND id=$2 AND revoked_at IS NULL`, tenantID, id)
+	return tag.RowsAffected() > 0, err
+}
+
+// resolveApiKey authenticates a bearer credential against stored API keys.
+// Returns the tenant + scope and bumps last_used_at. Empty tenant on miss.
+func (s *Server) resolveApiKey(ctx context.Context, secret string) (tenantID, scope string) {
+	if !strings.HasPrefix(secret, "tm_live_") {
+		return "", ""
+	}
+	err := s.pool.QueryRow(ctx,
+		`UPDATE api_keys SET last_used_at=now()
+		 WHERE key_hash=$1 AND revoked_at IS NULL
+		 RETURNING tenant_id, scope`, hashKey(secret)).Scan(&tenantID, &scope)
+	if err != nil {
+		return "", ""
+	}
+	return tenantID, scope
 }
 
 // ---------- invitations ----------

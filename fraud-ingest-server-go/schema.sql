@@ -215,6 +215,33 @@ CREATE TABLE IF NOT EXISTS invitations (
 CREATE UNIQUE INDEX IF NOT EXISTS invitations_pending_email_idx
   ON invitations (tenant_id, email) WHERE accepted_at IS NULL;
 
+-- Per-tenant console configuration (notifications, module toggles,
+-- integrations, editable tenant fields) as one jsonb blob. Derived values
+-- (session-ingestion counts, etc.) are computed at read time, not stored.
+CREATE TABLE IF NOT EXISTS tenant_settings (
+  tenant_id  text PRIMARY KEY REFERENCES tenants(id),
+  settings   jsonb NOT NULL DEFAULT '{}',
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- API keys for machine/integration access (SIEM export, core-banking, ...).
+-- The full key is shown once at creation; only its salted hash is stored.
+-- prefix keeps the first chars for display; scope gates access level.
+CREATE TABLE IF NOT EXISTS api_keys (
+  id           text PRIMARY KEY,           -- KEY-1, KEY-2, ...
+  tenant_id    text NOT NULL REFERENCES tenants(id),
+  name         text NOT NULL,
+  prefix       text NOT NULL,              -- e.g. tm_live_1a2b (display)
+  last4        text NOT NULL,
+  key_hash     text NOT NULL,              -- sha256(secret)
+  scope        text NOT NULL DEFAULT 'read',  -- read | read/write
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz,
+  revoked_at   timestamptz
+);
+CREATE INDEX IF NOT EXISTS api_keys_lookup_idx ON api_keys (key_hash) WHERE revoked_at IS NULL;
+CREATE SEQUENCE IF NOT EXISTS api_key_seq START 1;
+
 -- Idempotent upgrades for databases created before these columns existed.
 ALTER TABLE decisions ADD COLUMN IF NOT EXISTS signals jsonb NOT NULL DEFAULT '[]';
 ALTER TABLE alerts    ADD COLUMN IF NOT EXISTS signals jsonb NOT NULL DEFAULT '[]';

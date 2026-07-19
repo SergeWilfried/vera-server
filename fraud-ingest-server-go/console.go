@@ -55,6 +55,17 @@ func (s *Server) resolveAuth(ctx context.Context, r *http.Request) (*authInfo, e
 		return &authInfo{tenantID: tenantID, token: cred,
 			actor: Actor{Email: "service-key", Role: "service", Rank: roleRank["service"]}}, nil
 	}
+	// Generated API keys (tm_live_…): read scope → read-only, read/write → senior.
+	if strings.HasPrefix(cred, "tm_live_") {
+		if tenantID, scope := s.resolveApiKey(ctx, cred); tenantID != "" {
+			rank := rankRead
+			if scope == "read/write" {
+				rank = rankSenior
+			}
+			return &authInfo{tenantID: tenantID, token: cred,
+				actor: Actor{Email: "api-key", Role: "service", Rank: rank}}, nil
+		}
+	}
 	row, err := s.resolveAnalystToken(ctx, cred)
 	if err != nil || row == nil {
 		return nil, err
@@ -207,6 +218,44 @@ func (s *Server) consoleRoutes() []consoleRoute {
 				}
 				action["webhook_status"] = s.deliverAction(t, action, 2, 2*time.Second)
 				return action, 200
+			}),
+		// Tenant settings — readable by any analyst, writable by admins.
+		R("GET", `^/v1/console/settings$`, rankRead,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				return ok(s.getSettings(ctx, t))
+			}),
+		R("PATCH", `^/v1/console/settings$`, rankAdmin,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				return ok(s.patchSettings(ctx, t, b))
+			}),
+		// API keys — admin only, never service keys (see rank guard below).
+		R("GET", `^/v1/console/api-keys$`, rankAdmin,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				return ok(s.listApiKeys(ctx, t))
+			}),
+		R("POST", `^/v1/console/api-keys$`, rankAdmin,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				row, errStr, err := s.createApiKey(ctx, t, str(b, "name"), str(b, "scope"))
+				if err != nil {
+					log.Printf("createApiKey: %v", err)
+					return map[string]any{"error": "internal"}, 500
+				}
+				if errStr != "" {
+					return map[string]any{"error": errStr}, 400
+				}
+				return row, 200
+			}),
+		R("DELETE", `^/v1/console/api-keys/([\w-]+)$`, rankAdmin,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				found, err := s.revokeApiKey(ctx, t, m[1])
+				if err != nil {
+					log.Printf("revokeApiKey: %v", err)
+					return map[string]any{"error": "internal"}, 500
+				}
+				if !found {
+					return nil, 404
+				}
+				return map[string]any{"ok": true}, 200
 			}),
 		// Team management — admin only, never service keys.
 		R("GET", `^/v1/console/team$`, rankAdmin,
