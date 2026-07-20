@@ -22,9 +22,13 @@ var schemaSQL string
 
 // Tenant config: key must match SdkConfig on the device (>= 32 bytes);
 // webhook is where analyst actions are pushed, signed with the same key.
+// SiteKey is a PUBLIC per-tenant identifier for the browser SDK (not a
+// secret); browser telemetry is authed by site key + Origin allowlist.
 type Tenant struct {
-	Key     []byte
-	Webhook string
+	Key            []byte
+	Webhook        string
+	SiteKey        string
+	AllowedOrigins []string
 }
 
 type Server struct {
@@ -57,8 +61,10 @@ func main() {
 		pool: pool,
 		tenants: map[string]Tenant{
 			"wallet-acme": {
-				Key:     []byte("0123456789abcdef0123456789abcdef"),
-				Webhook: env("CORE_WEBHOOK", "http://localhost:8090/core-banking/hooks"),
+				Key:            []byte("0123456789abcdef0123456789abcdef"),
+				Webhook:        env("CORE_WEBHOOK", "http://localhost:8090/core-banking/hooks"),
+				SiteKey:        env("SITE_KEY", "site_wallet-acme_pub"),
+				AllowedOrigins: strings.Split(env("SITE_ORIGINS", "http://localhost:5199,http://localhost:5173,http://localhost:8099"), ","),
 			},
 		},
 		consoleKeys: map[string]string{
@@ -122,6 +128,28 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		s.handleTransactions(w, r)
 	case r.Method == "POST" && path == "/v1/score":
 		s.handleScore(w, r)
+	case strings.HasPrefix(path, "/v1/collect"):
+		// Browser SDK: public site-key + Origin auth, so CORS is required.
+		// Echo the tenant's allowed origin; the site key is validated per-request.
+		origin := r.Header.Get("Origin")
+		if s.originAllowed(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		w.Header().Set("Vary", "Origin")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding, X-Tenant-Id, X-Site-Key, X-Install-Id, X-Sdk")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(204)
+			return
+		}
+		switch {
+		case r.Method == "POST" && path == "/v1/collect/token":
+			s.handleCollectToken(w, r)
+		case r.Method == "POST" && path == "/v1/collect":
+			s.handleCollect(w, r)
+		default:
+			writeJSON(w, 404, map[string]any{"error": "not found"})
+		}
 	case strings.HasPrefix(path, "/v1/console/"):
 		// CORS for the browser console (SDK/bank endpoints stay server-to-server).
 		if origin := r.Header.Get("Origin"); s.corsOrigins[origin] {

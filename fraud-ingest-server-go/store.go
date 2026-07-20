@@ -278,6 +278,25 @@ func (s *Server) getScoringContext(ctx context.Context, tenantID, sessionID, use
 		}
 	}
 
+	// Web mouse baseline (same shape as touch strokes) for MOUSE_ANOMALY.
+	mouseRows, err := queryMaps(ctx, s.pool,
+		`SELECT payload FROM events
+		 WHERE tenant_id=$1 AND session_id <> $3 AND type='PASSIVE_MOUSE_STROKES'
+		   AND session_id IN (SELECT session_id FROM sessions
+		                      WHERE tenant_id=$1 AND user_ref=$2)
+		 ORDER BY ts DESC LIMIT 50`, tenantID, userRef, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range mouseRows {
+		raw, _ := json.Marshal(r["payload"])
+		if p, ok := parsePayload[struct {
+			Strokes []Stroke `json:"strokes"`
+		}](raw); ok {
+			sc.BaselineMouse = append(sc.BaselineMouse, p.Strokes...)
+		}
+	}
+
 	keyRows, err := queryMaps(ctx, s.pool,
 		`SELECT payload FROM events
 		 WHERE tenant_id=$1 AND session_id <> $3 AND type='PASSIVE_KEYSTROKES'

@@ -18,11 +18,17 @@ pass unchanged, plus the Go-only `invite` scenario:
     node simulate-sdk.js all    http://localhost:8080   # 9 core scenarios
     node simulate-sdk.js invite http://localhost:8080   # invitations + MFA (Go only)
     node simulate-sdk.js rat    http://localhost:8080   # remote-access / ODF (Go only)
+    node simulate-sdk.js web    http://localhost:8080   # browser collector + web scoring (Go only)
 
 The `rat` scenario proves the `REMOTE_ACCESS` scoring signal: a known-device
 session with an active screen-share (`PASSIVE_REMOTE_ACCESS`) + scripted input
 holds as Account Takeover, and an obscured-touch overlay alone also raises it.
-Go-only (post-freeze scoring), like `invite`.
+
+The `web` scenario proves the browser collector + web scoring: a fresh-browser
+session mints a token through the public site-key endpoint, streams a headless
+fingerprint and robotic mouse strokes through `/v1/collect`, and holds as
+Account Takeover with `HEADLESS_BROWSER` + `MOUSE_ANOMALY`. All three are
+Go-only (post-freeze), like `invite`.
 
 Covers: behavioral scoring (clean/coached/ato/mule), ledger-only
 detectors (feedmule, agent commission fraud), the action channel
@@ -55,6 +61,23 @@ Tenant settings + API keys:
     GET   /v1/console/api-keys            (admin) list, masked prefix••••last4
     POST  /v1/console/api-keys            (admin) {name, scope} -> full key ONCE
     DELETE /v1/console/api-keys/{id}      (admin) revoke
+
+### Browser collector (public site key)
+
+The browser SDK ([`../fraud-sdk-web`](../fraud-sdk-web)) can't hold the tenant
+HMAC secret, so its telemetry is authed by a **public** per-tenant site key +
+an Origin allowlist, and the server mints the session token:
+
+    POST /v1/collect/token   {sessionId, installId, userRef?} -> {token}
+    POST /v1/collect         NDJSON event batch (same envelope as /v1/events)
+
+Both require `X-Tenant-Id` + `X-Site-Key` headers and an allowlisted `Origin`;
+CORS is enabled on `/v1/collect*` (unlike the server-to-server `/v1/score`,
+which the bank backend calls with the minted token). `/v1/collect` accepts
+`Content-Encoding: gzip` and routes into the same `recordBatch` path as mobile
+events, so web and Android sessions score through one engine. Web-specific
+signals: `HEADLESS_BROWSER` (from `PASSIVE_WEB_FINGERPRINT`) and `MOUSE_ANOMALY`
+(mouse strokes vs the user's baseline). Config: `SITE_KEY`, `SITE_ORIGINS`.
 
 Generated keys (`tm_live_…`) are functional: stored as a sha256 hash,
 they authenticate the console/ingest API via the same bearer path —
@@ -104,6 +127,8 @@ Deps: `pgx/v5`, `golang.org/x/crypto` (scrypt). Everything else stdlib.
     CONSOLE_KEY             dev-console-key   (service key, senior-level)
     CONSOLE_ADMIN_EMAIL     admin@demobank.cz (bootstrap admin, first boot)
     CONSOLE_ADMIN_PASSWORD  admin-dev-password
+    SITE_KEY                site_wallet-acme_pub  (public browser-SDK site key)
+    SITE_ORIGINS            http://localhost:5199,http://localhost:5173,http://localhost:8099
 
 Tenant HMAC keys live in `main.go` (`TENANTS`) for now, like the Node
 server — move to secret storage before production.

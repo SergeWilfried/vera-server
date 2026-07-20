@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Demo Bank — fraud-sdk-web</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 460px; margin: 40px auto; color: #1E262E; }
+    h1 { font-size: 20px; }
+    label { display: block; font-size: 12px; font-weight: 700; margin: 14px 0 4px; color: #5A6976; }
+    input, button { font-size: 15px; padding: 10px 12px; width: 100%; box-sizing: border-box;
+      border: 1px solid #E3E7EB; border-radius: 4px; }
+    button { background: #D71A28; color: #fff; border: none; font-weight: 700; cursor: pointer; margin-top: 14px; }
+    #log { margin-top: 20px; font-family: monospace; font-size: 12px; color: #5A6976; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Demo Bank — web session</h1>
+  <p style="font-size:13px;color:#5A6976">Move the mouse, type, and transfer. The SDK captures behavior and posts it to the collector.</p>
+
+  <label for="email">Email</label>
+  <input id="email" type="email" placeholder="you@demobank.cz" autocomplete="username" />
+
+  <label for="pin">PIN</label>
+  <input id="pin" type="password" placeholder="••••••" autocomplete="current-password" />
+
+  <label for="payee">New payee (IBAN)</label>
+  <input id="payee" type="text" placeholder="CZ55 •• 0930" />
+
+  <button id="transfer">Transfer 88,000 Kč</button>
+  <div id="log">SDK loading…</div>
+
+  <script type="module">
+    import { FraudSdk, BusinessEvent } from '../dist/index.js';
+
+    const log = (m) => { document.getElementById('log').textContent += '\n' + m; };
+
+    FraudSdk.init({
+      tenantId: 'wallet-acme',
+      siteKey: 'site_wallet-acme_pub',
+      collectorUrl: 'http://localhost:8080',
+      flushIntervalMs: 2000,
+    });
+    document.getElementById('log').textContent = 'SDK initialized — capturing.';
+
+    FraudSdk.captureKeystrokes(document.getElementById('pin'), 'login.pin');
+    FraudSdk.captureKeystrokes(document.getElementById('email'), 'login.email');
+
+    document.getElementById('email').addEventListener('blur', async (e) => {
+      if (e.target.value) {
+        FraudSdk.session().setUser(await FraudSdk.hash(e.target.value));
+        FraudSdk.session().event(BusinessEvent.loginResult('SUCCESS'));
+        log('login bound + event queued');
+      }
+    });
+
+    document.getElementById('transfer').addEventListener('click', async () => {
+      FraudSdk.session().event(BusinessEvent.payeeAdded('demo-payee', 'BANK'));
+      FraudSdk.session().event(BusinessEvent.txnInitiated({ amountBucket: 'HIGH', currency: 'CZK', payeeIsNew: true, channel: 'BANK_TRANSFER' }));
+      await FraudSdk.flush();
+      const token = await FraudSdk.session().getToken();
+      log('flushed; session token: ' + (token ? token.slice(0, 24) + '…' : '(none)'));
+      // The bank backend would forward this token to /v1/score. Do it here for the demo.
+      try {
+        const r = await fetch('http://localhost:8080/v1/score', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionToken: token, transaction: { txnRef: 'TXN-DEMO', amount: 88000, currency: 'CZK', payeeIsNew: true } }),
+        });
+        const d = await r.json();
+        log('score: ' + d.decision + ' (' + d.riskScore + ')' + (d.alertId ? ' alert=' + d.alertId : ''));
+      } catch (err) { log('score failed: ' + err); }
+    });
+  </script>
+</body>
+</html>

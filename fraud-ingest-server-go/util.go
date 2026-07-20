@@ -42,8 +42,31 @@ type TokenPayload struct {
 	Tenant    string `json:"t"`
 	SessionID string `json:"s"`
 	InstallID string `json:"d"`
-	UserRef   string `json:"u"`
+	UserRef   string `json:"u,omitempty"`
 	Iat       int64  `json:"iat"`
+}
+
+// mintToken produces the compact session token the SDK normally builds
+// on-device (b64url(payload).b64url(hmac)). The browser SDK can't hold the
+// tenant HMAC key, so the server mints it after site-key auth. Signed with
+// the tenant key exactly like the Android token, so /v1/score verifies it
+// through the same path.
+func (s *Server) mintToken(tenantID, sessionID, installID, userRef string) (string, error) {
+	tenant, ok := s.tenants[tenantID]
+	if !ok {
+		return "", fmt.Errorf("unknown tenant")
+	}
+	p := TokenPayload{Tenant: tenantID, SessionID: sessionID, InstallID: installID,
+		UserRef: userRef, Iat: time.Now().Unix()}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return "", err
+	}
+	body := base64.RawURLEncoding.EncodeToString(raw)
+	m := hmac.New(sha256.New, tenant.Key)
+	m.Write([]byte(body))
+	sig := base64.RawURLEncoding.EncodeToString(m.Sum(nil))
+	return body + "." + sig, nil
 }
 
 func (s *Server) verifySessionToken(token string) (*TokenPayload, error) {

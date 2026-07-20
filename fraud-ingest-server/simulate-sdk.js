@@ -51,6 +51,65 @@ async function sendBatch(installId, events) {
   return r.json();   // {accepted, commands: [...]} — the device leg of the action channel
 }
 
+const SITE_KEY = process.env.SITE_KEY || 'site_wallet-acme_pub';
+const WEB_ORIGIN = 'http://localhost:5199';
+
+/** Browser SDK collector batch — public site-key + Origin (no HMAC). */
+async function sendCollect(installId, events) {
+  const r = await fetch(BASE + '/v1/collect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-ndjson', 'X-Tenant-Id': TENANT,
+               'X-Site-Key': SITE_KEY, 'X-Install-Id': installId, 'X-Sdk': 'web/0.1.0',
+               'Origin': WEB_ORIGIN },
+    body: events.map(e => JSON.stringify(e)).join('\n'),
+  });
+  if (r.status !== 200) throw new Error('/v1/collect -> ' + r.status + ' ' + await r.text());
+  return r.json();
+}
+
+/** Server-minted session token for a browser session. */
+async function collectToken(sessionId, installId, userRef) {
+  const r = await fetch(BASE + '/v1/collect/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Tenant-Id': TENANT,
+               'X-Site-Key': SITE_KEY, 'Origin': WEB_ORIGIN },
+    body: JSON.stringify({ sessionId, installId, userRef }),
+  });
+  return (await r.json()).token;
+}
+
+// Mouse "strokes" (same shape as touch): human = slower, curvier.
+const mouseStrokes = (n, dur, gap, straight) => Array.from({ length: n }, () => ({
+  t: Date.now(), dur: Math.round(rnd(dur * 0.85, dur * 1.15)), len: Math.round(rnd(20, 200)),
+  straight: straight != null ? straight : Math.round(rnd(60, 95)) / 100,
+  gap: Math.round(rnd(gap * 0.8, gap * 1.2)),
+}));
+
+const normalUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36';
+
+/** Replay clean web sessions to seed a mouse baseline + known browser. */
+async function buildWebHistory(u, daysAgo, amounts) {
+  for (let i = 0; i < daysAgo.length; i++) {
+    const t0 = Date.now() - daysAgo[i] * DAY;
+    const sid = crypto.randomUUID();
+    await sendCollect(u.install, [
+      { type: 'PASSIVE_WEB_FINGERPRINT', sessionId: sid, installId: u.install, ts: t0,
+        payload: { userAgent: normalUA, headless: false, botFlags: [], hardwareConcurrency: 8,
+                   screenW: 1920, screenH: 1080, languages: ['en-US'] } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: sid, installId: u.install, userRef: u.ref,
+        ts: t0 + 2000, payload: { outcome: 'SUCCESS' } },
+      { type: 'PASSIVE_MOUSE_STROKES', sessionId: sid, installId: u.install, userRef: u.ref,
+        ts: t0 + 40000, payload: { strokes: mouseStrokes(12, 300, 500) } },
+      { type: 'BIZ_TXN_INITIATED', sessionId: sid, installId: u.install, userRef: u.ref,
+        ts: t0 + 90000, payload: { amountBucket: 'LOW', currency: 'CZK', payeeIsNew: false, channel: 'BANK_TRANSFER' } },
+    ]);
+    if (amounts[i]) {
+      const tok = await collectToken(sid, u.install, u.ref);
+      await sendScore(tok, { txnRef: 'WHIST-' + i, amount: amounts[i], currency: 'CZK', payeeIsNew: false });
+    }
+  }
+}
+
 /** Bank-side feed batch — signed JSON, same HMAC scheme as event batches. */
 async function sendFeed(txns) {
   const raw = Buffer.from(JSON.stringify({ transactions: txns }), 'utf8');
@@ -405,6 +464,38 @@ const scenarios = {
         `sr action=${srAction.status} audit=${audit} ` +
         `revoked=${revoked.status} svc read/team=${svcRead.status}/${svcTeam.status}`);
     if (!ok) process.exitCode = 1;
+  },
+
+  /** Web SDK (browser) — Go server only (site-key collector + web scoring).
+   *  A victim's account is taken over from a headless-automation browser: a
+   *  new browser (install), headless fingerprint, and robotic mouse dynamics
+   *  that deviate from the user's learned mouse profile. Must HOLD as Account
+   *  Takeover with HEADLESS_BROWSER + MOUSE_ANOMALY, via /v1/collect. */
+  async web() {
+    const u = newUser();
+    await buildWebHistory(u, [30, 14, 2], [4000, 5000, 4500]);   // known browser + mouse baseline
+    const attacker = crypto.randomUUID();   // new browser, victim's stolen credentials
+    const t0 = Date.now();
+    const s = crypto.randomUUID();
+    await sendCollect(attacker, [
+      { type: 'PASSIVE_WEB_FINGERPRINT', sessionId: s, installId: attacker, ts: t0,
+        payload: { userAgent: 'Mozilla/5.0 HeadlessChrome/126.0', headless: true,
+                   botFlags: ['navigator.webdriver', 'automation UA', 'no plugins'],
+                   hardwareConcurrency: 2, screenW: 1280, screenH: 720, languages: [] } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s, installId: attacker, userRef: u.ref,
+        ts: t0 + 2000, payload: { outcome: 'SUCCESS' } },
+      { type: 'PASSIVE_MOUSE_STROKES', sessionId: s, installId: attacker, userRef: u.ref,
+        ts: t0 + 12000, payload: { strokes: mouseStrokes(12, 45, 60, 1.0) } },   // robotic
+      { type: 'BIZ_TXN_INITIATED', sessionId: s, installId: attacker, userRef: u.ref,
+        ts: t0 + 20000, payload: { amountBucket: 'HIGH', currency: 'CZK', payeeIsNew: true, channel: 'BANK_TRANSFER' } },
+    ]);
+    const tok = await collectToken(s, attacker, u.ref);
+    const got = await sendScore(tok, { txnRef: 'TXN-WEB', amount: 88000, currency: 'CZK', payeeIsNew: true });
+    report('web', { decision: 'HOLD', threatType: 'Account Takeover' }, got);
+    const codes = (got.signals || []).map((sg) => sg.code);
+    for (const need of ['HEADLESS_BROWSER', 'MOUSE_ANOMALY']) {
+      if (!codes.includes(need)) { console.log(`  ✗ expected ${need}`); process.exitCode = 1; }
+    }
   },
 
   /** RAT / remote-access (on-device fraud) — Go server only (REMOTE_ACCESS

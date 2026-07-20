@@ -4,6 +4,9 @@ node_modules/
 # Go build output (module builds to a binary named after the dir)
 fraud-ingest-server-go/fraud-ingest-server
 
+# Web SDK build output (npm run build regenerates it)
+fraud-sdk-web/dist/
+
 # Runtime / local data
 *.ndjson
 *.log

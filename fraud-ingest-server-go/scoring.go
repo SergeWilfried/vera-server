@@ -49,6 +49,12 @@ type remoteAccessPayload struct {
 	AccessibilityMatches []string `json:"accessibilityMatches"`
 }
 
+type webFingerprintPayload struct {
+	Headless bool     `json:"headless"`
+	BotFlags []string `json:"botFlags"`
+	UA       string   `json:"userAgent"`
+}
+
 type KeyTiming struct {
 	Dt    float64 `json:"dt"`
 	Op    string  `json:"op"`
@@ -63,6 +69,7 @@ type ScoringCtx struct {
 	KnownDeviceFirstSeen *time.Time
 	PrevSessionAt        *time.Time
 	BaselineStrokes      []Stroke
+	BaselineMouse        []Stroke
 	BaselineKeys         []KeyTiming
 	HistoryGeohashes     []string
 	AmountHistory        []float64
@@ -378,6 +385,43 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 		add("REMOTE_ACCESS", "Remote access / screen sharing likely", 35, raEvidence)
 	}
 
+	// --- web: headless / bot browser --------------------------------------
+	for _, e := range events {
+		if e.Type != "PASSIVE_WEB_FINGERPRINT" {
+			continue
+		}
+		if fp, ok := parsePayload[webFingerprintPayload](e.Payload); ok && fp.Headless {
+			ev := "headless/automation indicators"
+			if len(fp.BotFlags) > 0 {
+				ev = strings.Join(fp.BotFlags, ", ")
+			}
+			add("HEADLESS_BROWSER", "Headless / automated browser", 30, ev)
+		}
+		break
+	}
+
+	// --- web: mouse dynamics vs. baseline ---------------------------------
+	curMouse := []Stroke{}
+	for _, e := range events {
+		if e.Type != "PASSIVE_MOUSE_STROKES" {
+			continue
+		}
+		if p, ok := parsePayload[struct {
+			Strokes []Stroke `json:"strokes"`
+		}](e.Payload); ok {
+			curMouse = append(curMouse, p.Strokes...)
+		}
+	}
+	for _, dim := range []string{"dur", "gap"} {
+		z := touchDeviation(ctx.BaselineMouse, curMouse, dim)
+		if z != nil && math.Abs(*z) > 2.5 {
+			add("MOUSE_ANOMALY", "Mouse behavior deviates from learned profile", 25,
+				fmt.Sprintf("%s z=%.1f vs. %d baseline mouse strokes",
+					dim, *z, len(ctx.BaselineMouse)))
+			break
+		}
+	}
+
 	// --- keystroke cadence vs. baseline -----------------------------------
 	curKeyEvents := []KeyTiming{}
 	for _, e := range events {
@@ -510,11 +554,11 @@ func finish(signals []Signal, ctx *ScoringCtx) ScoreResult {
 	case ctx.UserRef != "" &&
 		(has("REMOTE_ACCESS") || has("NEW_DEVICE_FOR_USER") || has("DEVICE_INTEGRITY") ||
 			has("ACCESSIBILITY_SERVICES") || has("TOUCH_ANOMALY") ||
-			has("KEYSTROKE_ANOMALY")):
+			has("KEYSTROKE_ANOMALY") || has("MOUSE_ANOMALY") || has("HEADLESS_BROWSER")):
 		threat = "Account Takeover"
 	case has("DORMANT_REACTIVATED") || has("RAPID_IN_OUT"):
 		threat = "Money Mule"
-	case has("NO_USER_BOUND") && (has("EMULATOR") || has("PASTE_INPUT")):
+	case has("NO_USER_BOUND") && (has("EMULATOR") || has("PASTE_INPUT") || has("HEADLESS_BROWSER")):
 		threat = "New Account Fraud"
 	}
 	if signals == nil {
