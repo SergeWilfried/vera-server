@@ -19,6 +19,8 @@ pass unchanged, plus the Go-only `invite` scenario:
     node simulate-sdk.js invite http://localhost:8080   # invitations + MFA (Go only)
     node simulate-sdk.js rat    http://localhost:8080   # remote-access / ODF (Go only)
     node simulate-sdk.js web    http://localhost:8080   # browser collector + web scoring (Go only)
+    node simulate-sdk.js geo    http://localhost:8080   # location integrity (Go only)
+    node simulate-sdk.js retry  http://localhost:8080   # webhook outbox retries (Go only)
 
 The `rat` scenario proves the `REMOTE_ACCESS` scoring signal: a known-device
 session with an active screen-share (`PASSIVE_REMOTE_ACCESS`) + scripted input
@@ -27,8 +29,17 @@ holds as Account Takeover, and an obscured-touch overlay alone also raises it.
 The `web` scenario proves the browser collector + web scoring: a fresh-browser
 session mints a token through the public site-key endpoint, streams a headless
 fingerprint and robotic mouse strokes through `/v1/collect`, and holds as
-Account Takeover with `HEADLESS_BROWSER` + `MOUSE_ANOMALY`. All three are
-Go-only (post-freeze), like `invite`.
+Account Takeover with `HEADLESS_BROWSER` + `MOUSE_ANOMALY`.
+
+The `geo` scenario proves location integrity: an attacker who spoofs GPS to
+the victim's usual geohash silences `GEO_UNUSUAL` but raises `MOCK_LOCATION`
+(the evasion becomes the detection), and a fix 4,900 km from one minutes
+earlier raises `IMPOSSIBLE_TRAVEL` (geohash-centroid velocity).
+
+The `retry` scenario proves the webhook outbox: the bank receiver rejects the
+synchronous first attempt, and the Postgres-backed dispatcher redelivers
+(`X-Attempt: 2`) with no client involvement. All five are Go-only
+(post-freeze), like `invite`.
 
 Covers: behavioral scoring (clean/coached/ato/mule), ledger-only
 detectors (feedmule, agent commission fraud), the action channel
@@ -141,6 +152,11 @@ server — move to secret storage before production.
 - Endpoint semantics, policy bands (55/85), detector thresholds, RBAC
   ranks and webhook/retry behavior mirror the Node server; consult its
   [README](../fraud-ingest-server/README.md) for the full API reference.
-- Webhook retries are still in-process (goroutines) — persisting and
-  re-scheduling them at startup is the first production hardening TODO,
-  along with per-tenant key management and horizontal-scale review.
+- Webhook delivery is a Postgres-backed outbox: the first attempt is
+  synchronous (the console response carries real status); failures are
+  scheduled in `actions.webhook_next_attempt_at` (5s·2^n jittered, cap 1h,
+  `dead` after 10 attempts) and replayed by a dispatcher that claims rows
+  with `FOR UPDATE SKIP LOCKED` — restart-safe, and safe to run on every
+  instance. Delivery is at-least-once: receivers must dedupe on the action
+  `id` (an `X-Attempt` header aids observability). Remaining hardening
+  TODOs: per-tenant key management and a broader horizontal-scale review.

@@ -328,6 +328,25 @@ func (s *Server) getScoringContext(ctx context.Context, tenantID, sessionID, use
 		return nil, err
 	}
 
+	// Most recent prior fix (geohash + when) → IMPOSSIBLE_TRAVEL velocity.
+	var lastGeo *string
+	var lastGeoAt *time.Time
+	if err := s.pool.QueryRow(ctx,
+		`SELECT payload->>'geohash', ts FROM events
+		 WHERE tenant_id=$1 AND session_id <> $3
+		   AND type='PASSIVE_LOCATION_COARSE' AND payload ? 'geohash'
+		   AND session_id IN (SELECT session_id FROM sessions
+		                      WHERE tenant_id=$1 AND user_ref=$2)
+		 ORDER BY ts DESC LIMIT 1`,
+		tenantID, userRef, sessionID).Scan(&lastGeo, &lastGeoAt); err == nil {
+		if lastGeo != nil {
+			sc.LastFixGeohash = *lastGeo
+		}
+		sc.LastFixAt = lastGeoAt
+	} else if err != pgx.ErrNoRows {
+		return nil, err
+	}
+
 	amtRows, err := s.pool.Query(ctx,
 		`SELECT (txn->>'amount')::float8 FROM decisions
 		 WHERE tenant_id=$1 AND user_ref=$2 AND decision='ALLOW'

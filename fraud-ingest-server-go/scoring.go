@@ -72,6 +72,8 @@ type ScoringCtx struct {
 	BaselineMouse        []Stroke
 	BaselineKeys         []KeyTiming
 	HistoryGeohashes     []string
+	LastFixGeohash       string     // most recent prior location fix …
+	LastFixAt            *time.Time // … and when it was reported
 	AmountHistory        []float64
 	HasBankFlow          bool
 	FlowIn72             float64
@@ -109,6 +111,57 @@ func stddev(xs []float64, m float64) float64 {
 		s += (x - m) * (x - m)
 	}
 	return math.Sqrt(s / float64(len(xs)))
+}
+
+func trunc(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
+// Geohash cell centroid — inverse of the SDK's encoder. Precision 5
+// (~±2.4 km) is plenty for the country-scale distances IMPOSSIBLE_TRAVEL
+// cares about. ok=false on malformed input.
+func geohashCentroid(g string) (lat, lon float64, ok bool) {
+	const b32 = "0123456789bcdefghjkmnpqrstuvwxyz"
+	latR := [2]float64{-90, 90}
+	lonR := [2]float64{-180, 180}
+	even := true
+	for _, c := range g {
+		ci := strings.IndexRune(b32, c)
+		if ci < 0 {
+			return 0, 0, false
+		}
+		for bit := 4; bit >= 0; bit-- {
+			hi := ci>>bit&1 == 1
+			if even {
+				if hi {
+					lonR[0] = (lonR[0] + lonR[1]) / 2
+				} else {
+					lonR[1] = (lonR[0] + lonR[1]) / 2
+				}
+			} else {
+				if hi {
+					latR[0] = (latR[0] + latR[1]) / 2
+				} else {
+					latR[1] = (latR[0] + latR[1]) / 2
+				}
+			}
+			even = !even
+		}
+	}
+	return (latR[0] + latR[1]) / 2, (lonR[0] + lonR[1]) / 2, len(g) > 0
+}
+
+func haversineKm(lat1, lon1, lat2, lon2 float64) float64 {
+	const r = 6371.0
+	rad := math.Pi / 180
+	dLat := (lat2 - lat1) * rad
+	dLon := (lon2 - lon1) * rad
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1*rad)*math.Cos(lat2*rad)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	return 2 * r * math.Asin(math.Sqrt(a))
 }
 
 // Inter-key latencies usable for cadence: positive, below the
@@ -445,17 +498,44 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 	}
 
 	// --- location ---------------------------------------------------------
+	// Integrity first: an untrusted fix must raise risk, never lower it.
+	// A spoofer parking "at home" matches the geo history (silencing
+	// GEO_UNUSUAL) — the mock flag turns that evasion into a detection.
 	curGeo := ""
+	curGeoMock := false
+	var curGeoTs time.Time
 	for _, e := range events {
 		if e.Type != "PASSIVE_LOCATION_COARSE" {
 			continue
 		}
 		if p, ok := parsePayload[struct {
 			Geohash string `json:"geohash"`
+			Mock    bool   `json:"mock"`
 		}](e.Payload); ok {
-			curGeo = p.Geohash
+			curGeo, curGeoMock, curGeoTs = p.Geohash, p.Mock, e.Ts
 		}
 		break
+	}
+	if curGeoMock {
+		add("MOCK_LOCATION", "Location injected by a mock provider", 25,
+			fmt.Sprintf("fake-GPS fix reported as %s…", trunc(curGeo, 4)))
+	}
+	// Cross-session velocity: last trusted-enough fix vs. this one. Both the
+	// distance floor (geohash-5 cells are ~5 km) and the speed ceiling
+	// (faster than commercial flight) must be broken.
+	if curGeo != "" && ctx.LastFixGeohash != "" && ctx.LastFixAt != nil && !curGeoTs.IsZero() {
+		lat1, lon1, ok1 := geohashCentroid(ctx.LastFixGeohash)
+		lat2, lon2, ok2 := geohashCentroid(curGeo)
+		dt := curGeoTs.Sub(*ctx.LastFixAt)
+		if ok1 && ok2 && dt > 0 {
+			km := haversineKm(lat1, lon1, lat2, lon2)
+			kmh := km / dt.Hours()
+			if km >= 100 && kmh > 950 {
+				add("IMPOSSIBLE_TRAVEL", "Location physically unreachable since last fix", 30,
+					fmt.Sprintf("%.0f km in %d min (%.0f km/h) since %s…",
+						km, int(dt.Minutes()), kmh, trunc(ctx.LastFixGeohash, 4)))
+			}
+		}
 	}
 	if curGeo != "" && len(ctx.HistoryGeohashes) > 0 {
 		prefix := curGeo
@@ -554,11 +634,13 @@ func finish(signals []Signal, ctx *ScoringCtx) ScoreResult {
 	case ctx.UserRef != "" &&
 		(has("REMOTE_ACCESS") || has("NEW_DEVICE_FOR_USER") || has("DEVICE_INTEGRITY") ||
 			has("ACCESSIBILITY_SERVICES") || has("TOUCH_ANOMALY") ||
-			has("KEYSTROKE_ANOMALY") || has("MOUSE_ANOMALY") || has("HEADLESS_BROWSER")):
+			has("KEYSTROKE_ANOMALY") || has("MOUSE_ANOMALY") || has("HEADLESS_BROWSER") ||
+			has("IMPOSSIBLE_TRAVEL") || has("MOCK_LOCATION")):
 		threat = "Account Takeover"
 	case has("DORMANT_REACTIVATED") || has("RAPID_IN_OUT"):
 		threat = "Money Mule"
-	case has("NO_USER_BOUND") && (has("EMULATOR") || has("PASTE_INPUT") || has("HEADLESS_BROWSER")):
+	case has("NO_USER_BOUND") && (has("EMULATOR") || has("PASTE_INPUT") ||
+		has("HEADLESS_BROWSER") || has("MOCK_LOCATION")):
 		threat = "New Account Fraud"
 	}
 	if signals == nil {

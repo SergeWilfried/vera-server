@@ -95,6 +95,9 @@ func main() {
 		log.Printf("Seeded bootstrap admin %s (password from CONSOLE_ADMIN_PASSWORD)", adminEmail)
 	}
 
+	// Outbox worker: replays webhook deliveries scheduled in Postgres.
+	go s.webhookDispatcher(ctx)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.route)
 

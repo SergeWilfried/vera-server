@@ -556,6 +556,143 @@ const scenarios = {
     if (!overlayFired) process.exitCode = 1;
   },
 
+  /** Location integrity (Go server only). Two variants:
+   *  1. Spoof-to-home ATO — attacker on a new device fakes GPS to the
+   *     victim's usual geohash. GEO_UNUSUAL stays silent (location "matches"),
+   *     but the mock flag turns the evasion into MOCK_LOCATION -> HOLD/ATO.
+   *  2. Impossible travel — known device, honest-looking fix 4,900 km from
+   *     one reported minutes earlier -> IMPOSSIBLE_TRAVEL, STEP_UP/ATO. */
+  async geo() {
+    // -- variant 1: mock provider spoofed to the user's home geohash --------
+    const u = newUser();
+    await buildHistory(u, [30, 14, 2], [4000, 5000, 4500]);
+    const t0 = Date.now();
+    const s = crypto.randomUUID();
+    const attacker = crypto.randomUUID();               // new install
+    await sendBatch(attacker, [
+      { type: 'PASSIVE_LOCATION_COARSE', sessionId: s, installId: attacker, ts: t0,
+        payload: { tier: 'GEOHASH5', geohash: u.geohash, ageMs: 900, mock: true } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s, installId: attacker, userRef: u.ref,
+        ts: t0 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      { type: 'BIZ_TXN_INITIATED', sessionId: s, installId: attacker, userRef: u.ref,
+        ts: t0 + 30000, callSignals: noCall,
+        payload: { amountBucket: 'HIGH', currency: 'CZK', payeeIsNew: true, channel: 'BANK_TRANSFER' } },
+    ]);
+    const got = await sendScore(mintToken(s, attacker, u.ref),
+      { txnRef: 'TXN-GEOSPOOF', amount: 88000, currency: 'CZK', payeeIsNew: true });
+    report('geo', { decision: 'HOLD', threatType: 'Account Takeover' }, got);
+    const codes = (got.signals || []).map((sg) => sg.code);
+    if (!codes.includes('MOCK_LOCATION')) {
+      console.log('  ✗ expected a MOCK_LOCATION signal'); process.exitCode = 1;
+    }
+    if (codes.includes('GEO_UNUSUAL')) {
+      console.log('  ✗ GEO_UNUSUAL should stay silent when spoofed to home'); process.exitCode = 1;
+    } else {
+      console.log('  ✓ spoof-to-home: GEO_UNUSUAL silent, MOCK_LOCATION fired instead');
+    }
+
+    // -- variant 2: impossible travel on the known device -------------------
+    const u2 = newUser();
+    await buildHistory(u2, [30, 14, 2], [4000, 5000, 4500]);
+    // Honest fix at home 10 minutes ago…
+    const tHome = Date.now() - 10 * 60 * 1000;
+    const sHome = crypto.randomUUID();
+    await sendBatch(u2.install, [
+      { type: 'PASSIVE_LOCATION_COARSE', sessionId: sHome, installId: u2.install, ts: tHome,
+        payload: { tier: 'GEOHASH5', geohash: u2.geohash, ageMs: 5000, mock: false } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: sHome, installId: u2.install, userRef: u2.ref,
+        ts: tHome + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+    ]);
+    // …then a fix ~4,900 km away (Prague -> Lagos) minutes later.
+    const t1 = Date.now();
+    const s2 = crypto.randomUUID();
+    await sendBatch(u2.install, [
+      { type: 'PASSIVE_LOCATION_COARSE', sessionId: s2, installId: u2.install, ts: t1,
+        payload: { tier: 'GEOHASH5', geohash: 's14mhgs', ageMs: 3000, mock: false } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s2, installId: u2.install, userRef: u2.ref,
+        ts: t1 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      { type: 'BIZ_TXN_INITIATED', sessionId: s2, installId: u2.install, userRef: u2.ref,
+        ts: t1 + 30000, callSignals: noCall,
+        payload: { amountBucket: 'HIGH', currency: 'CZK', payeeIsNew: true, channel: 'BANK_TRANSFER' } },
+    ]);
+    const got2 = await sendScore(mintToken(s2, u2.install, u2.ref),
+      { txnRef: 'TXN-TELEPORT', amount: 88000, currency: 'CZK', payeeIsNew: true });
+    report('geo/travel', { decision: 'STEP_UP', threatType: 'Account Takeover' }, got2);
+    if (!(got2.signals || []).some((sg) => sg.code === 'IMPOSSIBLE_TRAVEL')) {
+      console.log('  ✗ expected an IMPOSSIBLE_TRAVEL signal'); process.exitCode = 1;
+    }
+  },
+
+  /** Webhook outbox retries (Go server only). The bank receiver 500s the
+   *  synchronous first attempt; the action must land as `failed` with a
+   *  scheduled retry, then the Postgres-backed dispatcher redelivers it
+   *  (X-Attempt: 2) without any client involvement. Restart survival is
+   *  the same mechanism — the schedule lives in the actions table. */
+  async retry() {
+    const http = require('http');
+    let hits = 0;
+    const received = [];
+    const bank = http.createServer((req, res) => {
+      const chunks = [];
+      req.on('data', c => chunks.push(c));
+      req.on('end', () => {
+        hits++;
+        if (hits === 1) {              // fail the synchronous first attempt
+          res.writeHead(500); res.end();
+          return;
+        }
+        const raw = Buffer.concat(chunks);
+        const sigOk = req.headers['x-signature'] ===
+          crypto.createHmac('sha256', KEY).update(raw).digest('base64');
+        received.push({ ...JSON.parse(raw.toString()), sigOk,
+                        attempt: req.headers['x-attempt'] });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    });
+    await new Promise(r => bank.listen(8090, r));
+
+    try {
+      const { alertId } = await scenarios.coached();
+      const H = { 'Content-Type': 'application/json',
+                  'Authorization': 'Bearer ' + (process.env.CONSOLE_KEY || 'dev-console-key') };
+      const act = await fetch(`${BASE}/v1/console/alerts/${alertId}/actions`, {
+        method: 'POST', headers: H,
+        body: JSON.stringify({ kind: 'TERMINATE_SESSION', note: 'retry test' }),
+      }).then(r => r.json());
+      const failedFirst = act.webhook_status === 'failed';
+
+      // Backoff after one failure is ~5s (+ dispatcher tick) — poll the
+      // action until the outbox redelivers, up to 25s.
+      let row = null;
+      for (let i = 0; i < 25 && !row; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        const list = await fetch(`${BASE}/v1/console/actions`, { headers: H })
+          .then(r => r.json());
+        const a = list.find(x => x.id === act.id);
+        if (a && a.webhook_status === 'delivered') row = a;
+      }
+
+      // The dispatcher may also drain stranded actions from earlier runs
+      // (that's the outbox working) — assert on OUR action only.
+      const mine = received.find(w => w.id === act.id);
+      const ok = failedFirst && row !== null &&
+        row.webhook_attempts === 2 &&
+        mine !== undefined && mine.sigOk &&
+        mine.type === 'session.terminate' && mine.attempt === '2';
+      console.log(`\n${ok ? '✓' : '✗'} retry: first=${act.webhook_status} ` +
+          `redelivered=${row ? `yes (attempts=${row.webhook_attempts})` : 'NO'} ` +
+          `attemptHeader=${mine?.attempt ?? 'n/a'}` +
+          (received.length > 1 ? ` (+${received.length - 1} stranded actions drained)` : ''));
+      if (!ok) {
+        console.log('  DETAIL', { act, row, received });
+        process.exitCode = 1;
+      }
+    } finally {
+      bank.close();
+    }
+  },
+
   /** Invitations + MFA (Go server only — the Node server is frozen as the
    *  SDK wire-format reference and does not implement these endpoints).
    *  Full lifecycle: admin invites, invitee reads the public context,

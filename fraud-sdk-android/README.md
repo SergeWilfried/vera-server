@@ -59,7 +59,7 @@ invalidate the app session server-side regardless.
 | Device fingerprint | collectors/DeviceFingerprintCollector | session start |
 | SIM telemetry + swap flag | collectors/SimTelemetryCollector | session start |
 | Root/emulator/hooking/accessibility | collectors/IntegrityCollector | session start |
-| Location (geohash-5/7, tiered) | collectors/LocationCollector | session start |
+| Location (geohash-5/7, tiered) + mock-provider flag | collectors/LocationCollector | session start |
 | Remote access / screen sharing | collectors/RemoteAccessCollector | session start + on business events |
 | Business events | events/BusinessEvent | explicit SessionContext calls |
 
@@ -97,7 +97,10 @@ bodies are ignored.
 - No IMEI/serial/ICCID. No raw lat/lon. No keystroke content, ever.
 - All identifiers pass through per-tenant salted SHA-256 (FraudSdk.hash).
 - Location: SDK never requests permission; reads last-known only if host app
-  already holds it, truncated to geohash before leaving the device.
+  already holds it, truncated to geohash before leaving the device. Each fix
+  carries a `mock` integrity flag (fake-GPS provider) — spoofing to a "usual"
+  location raises MOCK_LOCATION server-side instead of silencing the geo
+  signal, and cross-session velocity powers IMPOSSIBLE_TRAVEL.
 
 ## v0.3 TODO
 

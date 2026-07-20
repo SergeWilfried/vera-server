@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.location.Location;
 import android.location.LocationManager;
+import android.os.Build;
 
 import com.fraudsdk.SdkConfig;
 
@@ -19,6 +20,11 @@ import org.json.JSONObject;
  * TIER2: tenant-enabled fine — geohash precision 7 (~150 m). Tenant owns consent.
  *
  * Raw lat/lon never leaves the device.
+ *
+ * Location INTEGRITY ships at every tier that yields a fix: the `mock` flag
+ * (Location.isMock / isFromMockProvider) marks fixes injected by a fake-GPS
+ * app. Spoofing to look "local" therefore raises MOCK_LOCATION server-side
+ * instead of silencing the geo signal.
  */
 public final class LocationCollector {
 
@@ -52,8 +58,17 @@ public final class LocationCollector {
                     config.locationTier == SdkConfig.LocationTier.TIER2_OPT_IN_FINE ? 7 : 5;
             o.put("geohash", geohash(best.getLatitude(), best.getLongitude(), precision));
             o.put("ageMs", System.currentTimeMillis() - best.getTime());
+            o.put("mock", isMockFix(best));
         } catch (Exception ignored) {}
         return o;
+    }
+
+    /** True when the fix was injected by a mock provider (fake-GPS app). */
+    @SuppressWarnings("deprecation")
+    private static boolean isMockFix(Location l) {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                ? l.isMock()
+                : l.isFromMockProvider();
     }
 
     private boolean hasAnyLocationPermission() {

@@ -164,9 +164,10 @@ CREATE TABLE IF NOT EXISTS actions (
   target               jsonb NOT NULL,      -- {txnRef?, sessionId?, amount?}
   note                 text,
   requested_by         text,
-  webhook_status       text NOT NULL DEFAULT 'pending',  -- pending | delivered | failed
+  webhook_status       text NOT NULL DEFAULT 'pending',  -- pending | delivered | failed | dead
   webhook_attempts     integer NOT NULL DEFAULT 0,
   webhook_delivered_at timestamptz,
+  webhook_next_attempt_at timestamptz,   -- outbox: when the dispatcher retries
   last_error           text,
   device_status        text NOT NULL DEFAULT 'n/a',      -- n/a | pending | delivered
   device_delivered_at  timestamptz,
@@ -174,6 +175,12 @@ CREATE TABLE IF NOT EXISTS actions (
 );
 CREATE INDEX IF NOT EXISTS actions_device_idx
   ON actions (tenant_id, device_status) WHERE device_status = 'pending';
+-- Outbox migration for pre-existing databases (CREATE TABLE above is a no-op
+-- there); the partial index keeps the dispatcher's due-scan cheap.
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS webhook_next_attempt_at timestamptz;
+CREATE INDEX IF NOT EXISTS actions_webhook_due_idx
+  ON actions (webhook_next_attempt_at)
+  WHERE webhook_status IN ('pending', 'failed');
 
 -- Analyst accounts for the console API. Passwords are scrypt-hashed with
 -- a per-account salt; tokens are opaque, stored server-side (revocable).

@@ -301,19 +301,51 @@ func kindLabel(kind string) string {
 	return string(out)
 }
 
+// Webhook outbox tuning: exponential backoff base^attempts seconds (jittered,
+// capped at an hour); after maxWebhookAttempts the action goes 'dead' and is
+// surfaced to analysts instead of retried forever.
+const maxWebhookAttempts = 10
+
 func (s *Server) markWebhookResult(ctx context.Context, actionID string, ok bool, errMsg string) error {
-	status := "failed"
-	if ok {
-		status = "delivered"
-	}
+	// Failure schedules the next attempt: 5s·2^n ± 20% jitter, capped at 1h.
+	// Success or exhaustion clears the schedule; exhaustion goes 'dead'.
 	_, err := s.pool.Exec(ctx,
 		`UPDATE actions SET
-		   webhook_status = $2,
 		   webhook_attempts = webhook_attempts + 1,
-		   webhook_delivered_at = CASE WHEN $2 = 'delivered' THEN now() END,
+		   webhook_status = CASE
+		     WHEN $2 THEN 'delivered'
+		     WHEN webhook_attempts + 1 >= $4 THEN 'dead'
+		     ELSE 'failed' END,
+		   webhook_delivered_at = CASE WHEN $2 THEN now() END,
+		   webhook_next_attempt_at = CASE
+		     WHEN $2 OR webhook_attempts + 1 >= $4 THEN NULL
+		     ELSE now() + least(5 * power(2, webhook_attempts), 3600)
+		            * (0.8 + random() * 0.4) * interval '1 second' END,
 		   last_error = NULLIF($3, '')
-		 WHERE id = $1`, actionID, status, errMsg)
+		 WHERE id = $1`, actionID, ok, errMsg, maxWebhookAttempts)
 	return err
+}
+
+// claimDueWebhooks atomically leases up to `limit` actions due for
+// (re)delivery. FOR UPDATE SKIP LOCKED makes concurrent server instances
+// safe (no double-claims); the lease bump keeps a slow delivery from being
+// re-claimed mid-flight — a crash mid-delivery simply retries at lease end.
+// Rows with zero attempts are the synchronous first attempt's business for
+// the first minute; after that they're treated as orphaned by a crash.
+func (s *Server) claimDueWebhooks(ctx context.Context, limit int) ([]map[string]any, error) {
+	return queryMaps(ctx, s.pool,
+		`UPDATE actions a SET webhook_next_attempt_at = now() + interval '2 minutes'
+		 WHERE a.id IN (
+		   SELECT id FROM actions
+		   WHERE webhook_status IN ('pending', 'failed')
+		     AND webhook_attempts < $2
+		     AND (webhook_next_attempt_at IS NULL OR webhook_next_attempt_at <= now())
+		     AND (webhook_attempts >= 1 OR created_at <= now() - interval '60 seconds')
+		   ORDER BY created_at
+		   LIMIT $1
+		   FOR UPDATE SKIP LOCKED)
+		 RETURNING a.id, a.tenant_id, a.kind, a.alert_id, a.target, a.note,
+		           a.webhook_attempts`, limit, maxWebhookAttempts)
 }
 
 func (s *Server) listActions(ctx context.Context, tenantID string, limit int) ([]map[string]any, error) {

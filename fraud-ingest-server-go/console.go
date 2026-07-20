@@ -216,7 +216,7 @@ func (s *Server) consoleRoutes() []consoleRoute {
 				if action == nil {
 					return nil, 404
 				}
-				action["webhook_status"] = s.deliverAction(t, action, 2, 2*time.Second)
+				action["webhook_status"] = s.deliverAction(t, action, 1)
 				return action, 200
 			}),
 		// Tenant settings — readable by any analyst, writable by admins.
@@ -545,9 +545,10 @@ var webhookTypes = map[string]string{
 
 // deliverAction pushes one action to the tenant's core-banking webhook,
 // signed with the tenant key over the raw body. The first attempt is
-// awaited (the console response carries real delivery status); failures
-// get background retries with backoff.
-func (s *Server) deliverAction(tenantID string, action map[string]any, retriesLeft int, backoff time.Duration) string {
+// awaited (the console response carries real delivery status); afterwards
+// the outbox dispatcher owns redelivery — this function never schedules.
+// Delivery is at-least-once: receivers must dedupe on the action `id`.
+func (s *Server) deliverAction(tenantID string, action map[string]any, attempt int) string {
 	tenant := s.tenants[tenantID]
 	actionID, _ := action["id"].(string)
 	kind, _ := action["kind"].(string)
@@ -570,6 +571,7 @@ func (s *Server) deliverAction(tenantID string, action map[string]any, retriesLe
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-Id", tenantID)
 	req.Header.Set("X-Signature", sig)
+	req.Header.Set("X-Attempt", strconv.Itoa(attempt))
 
 	resp, err := client.Do(req)
 	if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -586,12 +588,48 @@ func (s *Server) deliverAction(tenantID string, action map[string]any, retriesLe
 		resp.Body.Close()
 	}
 	s.markWebhookResult(context.Background(), actionID, false, errMsg)
-	log.Printf("  → webhook failed %s (%s), retries left %d", actionID, errMsg, retriesLeft)
-	if retriesLeft > 0 {
-		go func() {
-			time.Sleep(backoff)
-			s.deliverAction(tenantID, action, retriesLeft-1, backoff*2)
-		}()
-	}
+	log.Printf("  → webhook failed %s attempt %d (%s)", actionID, attempt, errMsg)
 	return "failed"
+}
+
+// webhookDispatcher is the outbox worker: every tick it leases actions due
+// for redelivery (crash-safe — the schedule lives in Postgres, so restarts
+// lose nothing) and replays them. Safe to run on every instance thanks to
+// SKIP LOCKED in the claim.
+func (s *Server) webhookDispatcher(ctx context.Context) {
+	tick := time.NewTicker(3 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		due, err := s.claimDueWebhooks(ctx, 20)
+		if err != nil {
+			log.Printf("webhook dispatcher: claim: %v", err)
+			continue
+		}
+		for _, action := range due {
+			tenantID, _ := action["tenant_id"].(string)
+			attempts := asInt(action["webhook_attempts"])
+			id, _ := action["id"].(string)
+			log.Printf("  → redelivering %s (attempt %d)", id, attempts+1)
+			s.deliverAction(tenantID, action, attempts+1)
+		}
+	}
+}
+
+func asInt(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int32:
+		return int(n)
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	}
+	return 0
 }
