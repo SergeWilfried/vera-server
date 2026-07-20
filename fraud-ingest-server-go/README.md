@@ -17,6 +17,12 @@ pass unchanged, plus the Go-only `invite` scenario:
     cd ../fraud-ingest-server
     node simulate-sdk.js all    http://localhost:8080   # 9 core scenarios
     node simulate-sdk.js invite http://localhost:8080   # invitations + MFA (Go only)
+    node simulate-sdk.js rat    http://localhost:8080   # remote-access / ODF (Go only)
+
+The `rat` scenario proves the `REMOTE_ACCESS` scoring signal: a known-device
+session with an active screen-share (`PASSIVE_REMOTE_ACCESS`) + scripted input
+holds as Account Takeover, and an obscured-touch overlay alone also raises it.
+Go-only (post-freeze scoring), like `invite`.
 
 Covers: behavioral scoring (clean/coached/ato/mule), ledger-only
 detectors (feedmule, agent commission fraud), the action channel

@@ -407,6 +407,64 @@ const scenarios = {
     if (!ok) process.exitCode = 1;
   },
 
+  /** RAT / remote-access (on-device fraud) — Go server only (REMOTE_ACCESS
+   *  scoring is a post-freeze addition). A legit user on a KNOWN device is
+   *  remote-controlled: a screen-share is active (extra virtual display +
+   *  remote-control accessibility service) and the input is scripted. Must
+   *  HOLD as Account Takeover with the REMOTE_ACCESS signal. A second check
+   *  proves an overlay (obscured touch) alone also raises REMOTE_ACCESS. */
+  async rat() {
+    const u = newUser();
+    await buildHistory(u, [30, 14, 2], [4000, 5000, 4500]);   // known device + baseline
+    const t0 = Date.now();
+    const s = crypto.randomUUID();
+    const ra = { extraDisplays: 1, displayNames: ['AnyDesk-mirror'],
+                 accessibilitySuspect: true, accessibilityMatches: ['com.anydesk.anydeskandroid'],
+                 screenShareLikely: true };
+    await sendBatch(u.install, [
+      { type: 'PASSIVE_REMOTE_ACCESS', sessionId: s, installId: u.install, ts: t0, payload: ra },
+      { type: 'PASSIVE_LOCATION_COARSE', sessionId: s, installId: u.install, ts: t0,
+        payload: { tier: 'GEOHASH5', geohash: u.geohash, ageMs: 30000 } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s, installId: u.install, userRef: u.ref,
+        ts: t0 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall, remoteAccess: ra },
+      { type: 'PASSIVE_TOUCH_STROKES', sessionId: s, installId: u.install, userRef: u.ref,
+        ts: t0 + 20000, payload: { strokes: strokes(12, 40, 80) } },   // scripted tempo
+      { type: 'PASSIVE_KEYSTROKES', sessionId: s, installId: u.install, userRef: u.ref,
+        ts: t0 + 30000, payload: { fieldId: 'transfer.amount', keys: keys(15, 55) } },
+      { type: 'BIZ_TXN_INITIATED', sessionId: s, installId: u.install, userRef: u.ref,
+        ts: t0 + 40000, callSignals: noCall, remoteAccess: ra,
+        payload: { amountBucket: 'HIGH', currency: 'CZK', payeeIsNew: true, channel: 'BANK_TRANSFER' } },
+    ]);
+    const got = await sendScore(mintToken(s, u.install, u.ref),
+      { txnRef: 'TXN-RAT', amount: 90000, currency: 'CZK', payeeIsNew: true });
+    report('rat', { decision: 'HOLD', threatType: 'Account Takeover' }, got);
+    if (!(got.signals || []).some((sg) => sg.code === 'REMOTE_ACCESS')) {
+      console.log('  ✗ expected a REMOTE_ACCESS signal'); process.exitCode = 1;
+    }
+
+    // Overlay-only variant: obscured touch, no screen-share event.
+    const u2 = newUser();
+    await buildHistory(u2, [30, 14, 2], [4000, 5000, 4500]);
+    const t1 = Date.now();
+    const s2 = crypto.randomUUID();
+    const obscuredStrokes = strokes(8, u2.dur, u2.gap).map((st) => ({ ...st, obscured: true }));
+    await sendBatch(u2.install, [
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s2, installId: u2.install, userRef: u2.ref,
+        ts: t1 + 1000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      { type: 'PASSIVE_TOUCH_STROKES', sessionId: s2, installId: u2.install, userRef: u2.ref,
+        ts: t1 + 20000, payload: { strokes: obscuredStrokes } },
+      { type: 'BIZ_TXN_INITIATED', sessionId: s2, installId: u2.install, userRef: u2.ref,
+        ts: t1 + 40000, callSignals: noCall,
+        payload: { amountBucket: 'MID', currency: 'CZK', payeeIsNew: false, channel: 'BANK_TRANSFER' } },
+    ]);
+    const got2 = await sendScore(mintToken(s2, u2.install, u2.ref),
+      { txnRef: 'TXN-OVERLAY', amount: 5000, currency: 'CZK', payeeIsNew: false });
+    const overlayFired = (got2.signals || []).some((sg) => sg.code === 'REMOTE_ACCESS'
+      && /obscured/.test(sg.evidence));
+    console.log(`  ${overlayFired ? '✓' : '✗'} overlay variant: REMOTE_ACCESS from obscured touch`);
+    if (!overlayFired) process.exitCode = 1;
+  },
+
   /** Invitations + MFA (Go server only — the Node server is frozen as the
    *  SDK wire-format reference and does not implement these endpoints).
    *  Full lifecycle: admin invites, invitee reads the public context,

@@ -108,6 +108,8 @@ public final class TouchCapture implements Application.ActivityLifecycleCallback
             s.put("pAvg", samples > 0 ? Math.round(sumPressure / samples * 100f) / 100f : 0);
             s.put("area", Math.round(maxSize * 100f) / 100f);
             s.put("gap", lastTapUp > 0 ? downTs - lastTapUp : -1);   // inter-tap interval
+            // overlay tell: an obscured touch on a sensitive view is a RAT/overlay signal
+            if ((ev.getFlags() & MotionEvent.FLAG_WINDOW_IS_OBSCURED) != 0) s.put("obscured", true);
             lastTapUp = upTs;
 
             synchronized (strokes) {

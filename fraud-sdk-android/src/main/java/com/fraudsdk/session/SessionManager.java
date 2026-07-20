@@ -8,6 +8,7 @@ import android.os.Looper;
 import com.fraudsdk.FraudSdk;
 import com.fraudsdk.SdkConfig;
 import com.fraudsdk.collectors.CallSignalCollector;
+import com.fraudsdk.collectors.RemoteAccessCollector;
 import com.fraudsdk.events.BusinessEvent;
 import com.fraudsdk.transport.EventQueue;
 
@@ -150,7 +151,15 @@ public final class SessionManager {
                 o.put("ts", e.tsMs);
                 // in-call context at the moment of the event (coached-scam signal)
                 o.put("callSignals", CallSignalCollector.snapshot(appCtx));
+                // remote-access context at the moment of the event (ODF signal);
+                // screen-share usually starts right before the transfer
+                JSONObject ra = RemoteAccessCollector.snapshot(appCtx);
+                o.put("remoteAccess", ra);
                 queue.offer(o);
+                // surface it as its own passive event too when it flips suspect
+                if (RemoteAccessCollector.isSuspect(ra)) {
+                    enqueuePassive("REMOTE_ACCESS", RemoteAccessCollector.snapshot(appCtx));
+                }
             } catch (Exception ignored) {}
         });
     }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -34,8 +35,18 @@ type EventRow struct {
 }
 
 type Stroke struct {
-	Dur *float64 `json:"dur"`
-	Gap *float64 `json:"gap"`
+	Dur      *float64 `json:"dur"`
+	Gap      *float64 `json:"gap"`
+	Len      *float64 `json:"len"`
+	Straight *float64 `json:"straight"`
+	Obscured bool     `json:"obscured"`
+}
+
+type remoteAccessPayload struct {
+	ScreenShareLikely    bool     `json:"screenShareLikely"`
+	AccessibilitySuspect bool     `json:"accessibilitySuspect"`
+	ExtraDisplays        int      `json:"extraDisplays"`
+	AccessibilityMatches []string `json:"accessibilityMatches"`
 }
 
 type KeyTiming struct {
@@ -320,6 +331,53 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 		}
 	}
 
+	// --- remote access / screen sharing (on-device fraud) -----------------
+	// Detect the effect, not the app: an active screen-share (virtual
+	// display) or remote-control accessibility service, an overlay
+	// (obscured touches), or robotic injected input.
+	raEvidence := ""
+	for _, e := range events {
+		if e.Type != "PASSIVE_REMOTE_ACCESS" {
+			continue
+		}
+		if ra, ok := parsePayload[remoteAccessPayload](e.Payload); ok {
+			if ra.ScreenShareLikely {
+				raEvidence = fmt.Sprintf("screen sharing active (%d extra display(s))", ra.ExtraDisplays)
+				break
+			}
+			if ra.AccessibilitySuspect {
+				m := "remote-control tool"
+				if len(ra.AccessibilityMatches) > 0 {
+					m = strings.Join(ra.AccessibilityMatches, ", ")
+				}
+				raEvidence = "remote-control accessibility service: " + m
+				break
+			}
+		}
+	}
+	if raEvidence == "" {
+		for _, s := range curStrokes {
+			if s.Obscured {
+				raEvidence = "overlay: obscured touch on a monitored view"
+				break
+			}
+		}
+	}
+	if raEvidence == "" {
+		robotic := 0
+		for _, s := range curStrokes {
+			if s.Len != nil && *s.Len > 30 && s.Straight != nil && *s.Straight >= 0.99 {
+				robotic++
+			}
+		}
+		if robotic >= 3 {
+			raEvidence = fmt.Sprintf("%d robotic (injected) strokes", robotic)
+		}
+	}
+	if raEvidence != "" {
+		add("REMOTE_ACCESS", "Remote access / screen sharing likely", 35, raEvidence)
+	}
+
 	// --- keystroke cadence vs. baseline -----------------------------------
 	curKeyEvents := []KeyTiming{}
 	for _, e := range events {
@@ -450,7 +508,7 @@ func finish(signals []Signal, ctx *ScoringCtx) ScoreResult {
 		(has("NEW_PAYEE") || has("AMOUNT_ABOVE_PROFILE") || has("HIGH_AMOUNT")):
 		threat = "APP Scam"
 	case ctx.UserRef != "" &&
-		(has("NEW_DEVICE_FOR_USER") || has("DEVICE_INTEGRITY") ||
+		(has("REMOTE_ACCESS") || has("NEW_DEVICE_FOR_USER") || has("DEVICE_INTEGRITY") ||
 			has("ACCESSIBILITY_SERVICES") || has("TOUCH_ANOMALY") ||
 			has("KEYSTROKE_ANOMALY")):
 		threat = "Account Takeover"

@@ -11,6 +11,7 @@ import com.fraudsdk.capture.TouchCapture;
 import com.fraudsdk.collectors.DeviceFingerprintCollector;
 import com.fraudsdk.collectors.IntegrityCollector;
 import com.fraudsdk.collectors.LocationCollector;
+import com.fraudsdk.collectors.RemoteAccessCollector;
 import com.fraudsdk.collectors.SimTelemetryCollector;
 import com.fraudsdk.session.SessionContext;
 import com.fraudsdk.session.SessionManager;
@@ -84,6 +85,8 @@ public final class FraudSdk {
                             new IntegrityCollector(app, config).collect());
                     sdk.sessionManager.enqueuePassive("LOCATION_COARSE",
                             new LocationCollector(app, config).collect());
+                    sdk.sessionManager.enqueuePassive("REMOTE_ACCESS",
+                            RemoteAccessCollector.snapshot(app));
                 });
 
                 sdk.uploader.start();

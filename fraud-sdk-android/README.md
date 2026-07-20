@@ -60,7 +60,29 @@ invalidate the app session server-side regardless.
 | SIM telemetry + swap flag | collectors/SimTelemetryCollector | session start |
 | Root/emulator/hooking/accessibility | collectors/IntegrityCollector | session start |
 | Location (geohash-5/7, tiered) | collectors/LocationCollector | session start |
+| Remote access / screen sharing | collectors/RemoteAccessCollector | session start + on business events |
 | Business events | events/BusinessEvent | explicit SessionContext calls |
+
+### Remote-access (RAT / on-device-fraud) detection
+
+`RemoteAccessCollector` detects the *effect* of remote control, not a named
+app (no reliable "AnyDesk detected" API exists pre-Android-15):
+
+- **Screen sharing** — an extra/virtual display from `DisplayManager`
+  (MediaProjection / VirtualDisplay that AnyDesk/TeamViewer spin up), and the
+  Android-15 `addScreenRecordingCallback` state when available.
+- **Remote-control accessibility** — enabled accessibility services matched
+  against a denylist (anydesk/teamviewer/rustdesk/…); only then is a tool named.
+- **Overlay** — `TouchCapture` flags strokes whose `MotionEvent` is obscured.
+- **Injected input** — the server flags robotic strokes (dead-straight,
+  constant pressure) from the touch data already sent.
+
+Emitted as `PASSIVE_REMOTE_ACCESS` at session start and re-sampled on each
+business event (a screen-share usually starts right before the transfer),
+mirroring how call state rides on business events. The server raises a
+`REMOTE_ACCESS` scoring signal → Account Takeover (especially with an active
+call — the ODF fingerprint). Reports "likely"; **no `QUERY_ALL_PACKAGES`**
+(effect detection only, Play-policy safe).
 
 ## Transport
 
