@@ -66,7 +66,8 @@ func (s *Server) detections(ctx context.Context, tenantID string, days int) ([]m
 // Transaction-risk view: recent scored payments + auth-outcome mix, from decisions.
 func (s *Server) transactionRisk(ctx context.Context, tenantID string, limit int) (map[string]any, error) {
 	stream, err := queryMaps(ctx, s.pool,
-		`SELECT session_id, user_ref, txn_ref, txn, decision, score, created_at
+		`SELECT session_id, user_ref, txn_ref, txn, decision, score,
+		        signals, reasons, threat_type, created_at
 		 FROM decisions WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT $2`,
 		tenantID, limit)
 	if err != nil {
