@@ -172,6 +172,13 @@ CREATE TABLE IF NOT EXISTS cases (
   created_at  timestamptz NOT NULL DEFAULT now(),
   updated_at  timestamptz NOT NULL DEFAULT now()
 );
+-- SIM swap (and every proceeds-capturing fraud) is TWO compliance events:
+-- the fraud, and the laundering of what moved. case_type separates the
+-- files; alert_id links a case to its alert; linked_case_id ties the
+-- auto-opened AML file back to the fraud case it derives from.
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS case_type      text NOT NULL DEFAULT 'FRAUD';  -- FRAUD | AML
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS alert_id       text;
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS linked_case_id text;
 
 CREATE TABLE IF NOT EXISTS case_events (
   id        bigserial PRIMARY KEY,

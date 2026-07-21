@@ -386,9 +386,9 @@ func (s *Server) createCase(ctx context.Context, tenantID, alertID, assignee, su
 		summary, _ = alert["signal"].(string)
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO cases (id, tenant_id, user_ref, threat_type, assignee, summary)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		caseID, tenantID, alert["user_ref"], alert["threat_type"], assignee, summary); err != nil {
+		`INSERT INTO cases (id, tenant_id, user_ref, threat_type, assignee, summary, alert_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		caseID, tenantID, alert["user_ref"], alert["threat_type"], assignee, summary, alertID); err != nil {
 		return "", err
 	}
 	evt := "Case opened from alert " + alertID
@@ -403,6 +403,96 @@ func (s *Server) createCase(ctx context.Context, tenantID, alertID, assignee, su
 		`UPDATE alerts SET case_id=$3, updated_at=now() WHERE tenant_id=$1 AND id=$2`,
 		tenantID, alertID, caseID); err != nil {
 		return "", err
+	}
+	return caseID, tx.Commit(ctx)
+}
+
+// maybeOpenAmlCase implements the "two files" doctrine: a proceeds-capturing
+// fraud is also a money-laundering predicate, so confirming the fraud must
+// open the AML file — but only when funds actually MOVED (a swap caught
+// before cash-out has no laundering leg). Idempotent per alert. Returns the
+// AML case id, or "" when no file is warranted.
+func (s *Server) maybeOpenAmlCase(ctx context.Context, tenantID, alertID, actor string) (string, error) {
+	alert, err := queryMap(ctx, s.pool,
+		`SELECT user_ref, threat_type, created_at, case_id FROM alerts
+		 WHERE tenant_id=$1 AND id=$2`, tenantID, alertID)
+	if err != nil || alert == nil {
+		return "", err
+	}
+	userRef, _ := alert["user_ref"].(string)
+	if userRef == "" {
+		return "", nil
+	}
+	// One AML file per alert, however many times the disposition is saved.
+	if existing, err := queryMap(ctx, s.pool,
+		`SELECT id FROM cases WHERE tenant_id=$1 AND alert_id=$2 AND case_type='AML'`,
+		tenantID, alertID); err != nil {
+		return "", err
+	} else if existing != nil {
+		id, _ := existing["id"].(string)
+		return id, nil
+	}
+	// The laundering leg: outbound movement on the subject's accounts since
+	// the compromise. No movement -> no Event 2 -> no file (the triage that
+	// keeps case volume sane).
+	createdAt, _ := alert["created_at"].(time.Time)
+	flows, err := queryMaps(ctx, s.pool,
+		`SELECT txn_ref, amount::float8 AS amount, coalesce(currency,'') AS currency,
+		        coalesce(counterparty_ref,'') AS counterparty_ref, ts
+		 FROM bank_txns
+		 WHERE tenant_id=$1 AND user_ref=$2 AND direction='OUT' AND ts >= $3
+		 ORDER BY ts LIMIT 20`, tenantID, userRef, createdAt)
+	if err != nil || len(flows) == 0 {
+		return "", err
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+	var caseID string
+	if err := tx.QueryRow(ctx, `SELECT 'C-' || nextval('case_seq')`).Scan(&caseID); err != nil {
+		return "", err
+	}
+	total := 0.0
+	currency := ""
+	for _, f := range flows {
+		if a, ok := f["amount"].(float64); ok {
+			total += a
+		}
+		if currency == "" {
+			currency, _ = f["currency"].(string)
+		}
+	}
+	threat, _ := alert["threat_type"].(string)
+	fraudCase, _ := alert["case_id"].(string)
+	summary := fmt.Sprintf(
+		"Trace proceeds of %s (%s): %d outbound transfer(s), %.0f %s moved after compromise",
+		alertID, threat, len(flows), total, currency)
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO cases (id, tenant_id, user_ref, threat_type, assignee, summary,
+		                    case_type, alert_id, linked_case_id)
+		 VALUES ($1, $2, $3, 'Money Laundering', 'Unassigned', $4, 'AML', $5, NULLIF($6, ''))`,
+		caseID, tenantID, userRef, summary, alertID, fraudCase); err != nil {
+		return "", err
+	}
+	events := []string{fmt.Sprintf(
+		"AML file auto-opened: %s resolved as confirmed fraud with post-compromise fund movement (by %s)",
+		alertID, actor)}
+	for _, f := range flows {
+		ts, _ := f["ts"].(time.Time)
+		events = append(events, fmt.Sprintf("Flow: %.0f %s -> %v (%v) at %s",
+			f["amount"], f["currency"], f["counterparty_ref"], f["txn_ref"],
+			ts.Format("2006-01-02 15:04")))
+	}
+	events = append(events,
+		"Next: identify the mule account layer and assess STR threshold for the traced flows")
+	for _, evt := range events {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO case_events (case_id, event) VALUES ($1, $2)`, caseID, evt); err != nil {
+			return "", err
+		}
 	}
 	return caseID, tx.Commit(ctx)
 }

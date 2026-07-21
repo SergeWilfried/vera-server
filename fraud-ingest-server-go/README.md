@@ -23,6 +23,8 @@ pass unchanged, plus the Go-only `invite` scenario:
     node simulate-sdk.js retry  http://localhost:8080   # webhook outbox retries (Go only)
     node simulate-sdk.js idem   http://localhost:8080   # idempotent /v1/score (Go only)
     node simulate-sdk.js keys   http://localhost:8080   # tenant key rotation (Go only)
+    node simulate-sdk.js aml    http://localhost:8080   # AML file auto-open (Go only)
+    node simulate-sdk.js graph  http://localhost:8080   # follow-the-money graph (Go only)
 
 The `rat` scenario proves the `REMOTE_ACCESS` scoring signal: a known-device
 session with an active screen-share (`PASSIVE_REMOTE_ACCESS`) + scripted input
@@ -49,8 +51,21 @@ scores fresh.
 
 The `keys` scenario proves per-tenant key management end-to-end: it drives
 the operator CLI (create → rotate → revoke) against the shared DB and shows
-the running server converging without a restart. All seven are Go-only
-(post-freeze), like `invite`.
+the running server converging without a restart.
+
+The `aml` scenario proves the "two files" doctrine: a proceeds-capturing
+fraud is also a money-laundering predicate, so resolving an alert as
+confirmed fraud auto-opens a linked **AML case** (`case_type='AML'`,
+threat "Money Laundering") pre-populated with the post-compromise outbound
+flow trace — but only when funds actually moved, and exactly once per
+alert.
+
+The `graph` scenario proves the follow-the-money endpoint
+(`GET /v1/console/graph/{userRef}`): counterparties classified from ledger
+heuristics (recurring → safe, rapid in-out / fan-in → mule, open-alert
+match → intel), one-hop expansion where a suspicious counterparty is an
+in-book account, and device-sharing nodes from the sessions table. All
+nine are Go-only (post-freeze), like `invite`.
 
 Covers: behavioral scoring (clean/coached/ato/mule), ledger-only
 detectors (feedmule, agent commission fraud), the action channel

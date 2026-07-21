@@ -159,7 +159,24 @@ func (s *Server) consoleRoutes() []consoleRoute {
 			}),
 		R("PATCH", `^/v1/console/alerts/([\w-]+)$`, rankAnalyst,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
-				return ok(s.updateAlert(ctx, t, m[1], str(b, "state"), str(b, "disposition")))
+				alert, err := s.updateAlert(ctx, t, m[1], str(b, "state"), str(b, "disposition"))
+				if err != nil || alert == nil {
+					return ok(alert, err)
+				}
+				// Two-files doctrine: confirming a proceeds-capturing fraud
+				// opens the parallel AML file when funds moved post-compromise.
+				disp := strings.ToLower(str(b, "disposition"))
+				if str(b, "state") == "Resolved" &&
+					strings.Contains(disp, "fraud") && !strings.Contains(disp, "false") {
+					amlID, aerr := s.maybeOpenAmlCase(ctx, t, m[1], actor.Email)
+					if aerr != nil {
+						log.Printf("maybeOpenAmlCase %s: %v", m[1], aerr)
+					} else if amlID != "" {
+						alert["aml_case_id"] = amlID
+						log.Printf("⚖ AML file %s auto-opened from %s", amlID, m[1])
+					}
+				}
+				return alert, 200
 			}),
 		R("POST", `^/v1/console/alerts/([\w-]+)/case$`, rankAnalyst,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
@@ -197,6 +214,10 @@ func (s *Server) consoleRoutes() []consoleRoute {
 		R("GET", `^/v1/console/accounts/([\w-]+)/transactions$`, rankRead,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				return ok(s.listAccountTxns(ctx, t, m[1], 50))
+			}),
+		R("GET", `^/v1/console/graph/([\w.:-]+)$`, rankRead,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				return ok(s.getGraph(ctx, t, m[1]))
 			}),
 		R("GET", `^/v1/console/actions$`, rankRead,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {

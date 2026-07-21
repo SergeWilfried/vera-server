@@ -629,6 +629,123 @@ const scenarios = {
     }
   },
 
+  /** Follow-the-money graph (Go server only). Seeds a subject with a
+   *  recurring utility payment (safe), a large transfer to a mule-patterned
+   *  in-book account with fan-in from two other customers (mule + hop-2
+   *  expansion to its cash-out layer), and a second user on the SAME device
+   *  (device-link node from the sessions table). Asserts the graph endpoint
+   *  classifies and expands all three. */
+  async graph() {
+    const u = newUser();
+    const rid = crypto.randomUUID().slice(0, 8);
+    const acct = 'acc-' + u.ref.slice(0, 8);
+    const muleCp = 'mule-' + rid;
+    const safeCp = 'util-' + rid;
+    const mk = () => 'G-' + crypto.randomUUID().slice(0, 8);
+    const others = [newUser(), newUser()];
+
+    await sendFeed([
+      // Recurring, months-old relationship -> 'safe'.
+      ...[45, 40, 35].map((d) => ({
+        txnRef: mk(), accountRef: acct, userRef: u.ref, direction: 'OUT', amount: 1200,
+        currency: 'CZK', counterpartyRef: safeCp, channel: 'BILL', ts: Date.now() - d * DAY,
+      })),
+      // Subject's large transfer into the mule.
+      { txnRef: mk(), accountRef: acct, userRef: u.ref, direction: 'OUT', amount: 150000,
+        currency: 'CZK', counterpartyRef: muleCp, channel: 'P2P', ts: Date.now() - 3600e3 },
+      // Fan-in: two other customers also feed the same counterparty.
+      ...others.map((o, i) => ({
+        txnRef: mk(), accountRef: 'acc-' + o.ref.slice(0, 8), userRef: o.ref, direction: 'OUT',
+        amount: 90000 - i * 10000, currency: 'CZK', counterpartyRef: muleCp,
+        channel: 'P2P', ts: Date.now() - (2 + i) * 3600e3 })),
+      // The mule as an in-book account: rapid in-out + its cash-out layer (hop 2).
+      { txnRef: mk(), accountRef: muleCp, direction: 'IN', amount: 320000, currency: 'CZK',
+        counterpartyRef: 'cp-victims', channel: 'P2P', ts: Date.now() - 7200e3 },
+      { txnRef: mk(), accountRef: muleCp, direction: 'OUT', amount: 300000, currency: 'CZK',
+        counterpartyRef: 'cashout-' + rid, channel: 'BANK_TRANSFER', ts: Date.now() - 1800e3 },
+    ]);
+    // Device link: the subject's own session, then a second user on the SAME install.
+    const s1 = crypto.randomUUID(), s2 = crypto.randomUUID();
+    await sendBatch(u.install, [
+      { type: 'SCREEN_VIEWED', sessionId: s1, installId: u.install, userRef: u.ref,
+        ts: Date.now() - 60000, payload: { screenId: 'home' } }]);
+    await sendBatch(u.install, [
+      { type: 'SCREEN_VIEWED', sessionId: s2, installId: u.install, userRef: others[0].ref,
+        ts: Date.now(), payload: { screenId: 'home' } }]);
+
+    const H = { 'Authorization': 'Bearer ' + (process.env.CONSOLE_KEY || 'dev-console-key') };
+    const g = await fetch(`${BASE}/v1/console/graph/${u.ref}`, { headers: H }).then(r => r.json());
+
+    const byLabel = (l) => (g.nodes || []).find(n => n.label === l);
+    const safeNode = byLabel(safeCp);
+    const muleNode = byLabel(muleCp);
+    const hop2 = (g.nodes || []).find(n => n.parent === muleNode?.id && n.label === 'cashout-' + rid);
+    const devNode = (g.nodes || []).find(n => n.kind === 'device');
+    // Subject + the two other customers all feed the mule -> fan-in of 3.
+    const fanFlag = (muleNode?.flags || []).some(f => /Fan-in from \d+ distinct/.test(f));
+
+    const ok = safeNode?.kind === 'safe' && muleNode?.kind === 'mule' && fanFlag &&
+      hop2 !== undefined && hop2.kind === 'mule' && devNode !== undefined &&
+      Array.isArray(g.subject?.stats) && g.subject.stats.length >= 3;
+    console.log(`\n${ok ? '✓' : '✗'} graph: safe=${safeNode?.kind} mule=${muleNode?.kind} ` +
+        `fan-in=${fanFlag} hop2=${hop2 ? hop2.label : 'MISSING'} ` +
+        `device-link=${devNode ? devNode.label : 'MISSING'} nodes=${(g.nodes || []).length}`);
+    if (!ok) {
+      console.log('  DETAIL', JSON.stringify(g, null, 1).slice(0, 1500));
+      process.exitCode = 1;
+    }
+  },
+
+  /** AML auto-open (Go server only) — the "two files" doctrine: confirming
+   *  a proceeds-capturing fraud must open the parallel AML file, but ONLY
+   *  when funds actually moved post-compromise. Positive: coached alert +
+   *  outbound feed flows -> resolve as fraud -> linked AML case with the
+   *  flow trace, idempotent on re-resolve. Negative: no movement -> no file. */
+  async aml() {
+    const H = { 'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + (process.env.CONSOLE_KEY || 'dev-console-key') };
+    const resolve = (alertId) =>
+      fetch(`${BASE}/v1/console/alerts/${alertId}`, {
+        method: 'PATCH', headers: H,
+        body: JSON.stringify({ state: 'Resolved', disposition: 'Fraud confirmed — alert resolved.' }),
+      }).then(r => r.json());
+
+    // Positive: proceeds moved out after the alert -> AML file opens.
+    const { user, alertId } = await scenarios.coached();
+    const acct = 'acc-' + user.ref.slice(0, 8);
+    await sendFeed([
+      { txnRef: 'AML-' + crypto.randomUUID().slice(0, 8), accountRef: acct, userRef: user.ref,
+        direction: 'OUT', amount: 120000, currency: 'CZK', counterpartyRef: 'cp-mule-1',
+        channel: 'P2P', ts: Date.now() + 1000 },
+      { txnRef: 'AML-' + crypto.randomUUID().slice(0, 8), accountRef: acct, userRef: user.ref,
+        direction: 'OUT', amount: 118000, currency: 'CZK', counterpartyRef: 'cp-mule-2',
+        channel: 'P2P', ts: Date.now() + 2000 },
+    ]);
+    const resolved = await resolve(alertId);
+    const amlId = resolved.aml_case_id;
+    let amlCase = null, flowEvents = 0;
+    if (amlId) {
+      amlCase = await fetch(`${BASE}/v1/console/cases/${amlId}`, { headers: H }).then(r => r.json());
+      flowEvents = (amlCase.timeline || []).filter(e => /^Flow:/.test(e.event)).length;
+    }
+    const again = await resolve(alertId);   // idempotent: same file, not a second one
+
+    // Negative: fraud confirmed but nothing moved -> no AML file.
+    const second = await scenarios.coached();
+    const negative = await resolve(second.alertId);
+
+    const ok = !!amlId && amlCase?.case_type === 'AML' &&
+      amlCase?.threat_type === 'Money Laundering' && flowEvents === 2 &&
+      again.aml_case_id === amlId && negative.aml_case_id === undefined;
+    console.log(`\n${ok ? '✓' : '✗'} aml: file=${amlId ?? 'NONE'} type=${amlCase?.case_type} ` +
+        `flows=${flowEvents} idempotent=${again.aml_case_id === amlId} ` +
+        `no-movement-no-file=${negative.aml_case_id === undefined}`);
+    if (!ok) {
+      console.log('  DETAIL', { resolved, amlCase, again: again.aml_case_id, negative: negative.aml_case_id });
+      process.exitCode = 1;
+    }
+  },
+
   /** Per-tenant key management (Go server only). Drives the operator CLI
    *  (`vera-go tenant …`) against the shared DB, then proves the running
    *  server picks changes up without a restart: create a tenant -> its key
