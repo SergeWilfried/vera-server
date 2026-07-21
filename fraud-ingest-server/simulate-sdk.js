@@ -629,6 +629,42 @@ const scenarios = {
     if (!(got2.signals || []).some((sg) => sg.code === 'IMPOSSIBLE_TRAVEL')) {
       console.log('  ✗ expected an IMPOSSIBLE_TRAVEL signal'); process.exitCode = 1;
     }
+
+    // -- variant 3: impossible travel on a NEW device -> HOLD (queue alert) --
+    // A taken-over account seen at home minutes ago, now transacting from
+    // 4,900 km away on a fresh handset: impossible travel + new device stack
+    // over the hold threshold, so it raises a real Account-Takeover alert.
+    const u3 = newUser();
+    await buildHistory(u3, [30, 14, 2], [4000, 5000, 4500]);
+    const tHome3 = Date.now() - 8 * 60 * 1000;
+    const sHome3 = crypto.randomUUID();
+    await sendBatch(u3.install, [
+      { type: 'PASSIVE_LOCATION_COARSE', sessionId: sHome3, installId: u3.install, ts: tHome3,
+        payload: { tier: 'GEOHASH5', geohash: u3.geohash, ageMs: 5000, mock: false } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: sHome3, installId: u3.install, userRef: u3.ref,
+        ts: tHome3 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+    ]);
+    const t2 = Date.now();
+    const s3 = crypto.randomUUID();
+    const attacker3 = crypto.randomUUID();              // fresh handset
+    await sendBatch(attacker3, [
+      { type: 'PASSIVE_LOCATION_COARSE', sessionId: s3, installId: attacker3, ts: t2,
+        payload: { tier: 'GEOHASH5', geohash: 's14mhgs', ageMs: 3000, mock: false } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s3, installId: attacker3, userRef: u3.ref,
+        ts: t2 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      { type: 'BIZ_TXN_INITIATED', sessionId: s3, installId: attacker3, userRef: u3.ref,
+        ts: t2 + 30000, callSignals: noCall,
+        payload: { amountBucket: 'HIGH', currency: 'CZK', payeeIsNew: true, channel: 'BANK_TRANSFER' } },
+    ]);
+    const got3 = await sendScore(mintToken(s3, attacker3, u3.ref),
+      { txnRef: 'TXN-TELEPORT-NEWDEV', amount: 92000, currency: 'CZK', payeeIsNew: true });
+    report('geo/travel+newdev', { decision: 'HOLD', threatType: 'Account Takeover' }, got3);
+    const c3 = (got3.signals || []).map((sg) => sg.code);
+    if (!c3.includes('IMPOSSIBLE_TRAVEL') || !c3.includes('NEW_DEVICE_FOR_USER')) {
+      console.log('  ✗ expected IMPOSSIBLE_TRAVEL + NEW_DEVICE_FOR_USER'); process.exitCode = 1;
+    } else {
+      console.log('  ✓ travel + new device: raised as an Account-Takeover alert (HOLD)');
+    }
   },
 
   /** Follow-the-money graph (Go server only). Seeds a subject with a
