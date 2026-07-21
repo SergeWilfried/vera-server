@@ -114,6 +114,32 @@ func (s *Server) detectionAnalytics(ctx context.Context, tenantID string, days i
 }
 
 // Transaction-risk view: recent scored payments + auth-outcome mix, from decisions.
+// search backs the console's global search: alert ids (contains), and
+// subjects/accounts by ref prefix. Cheap prefix/contains lookups only —
+// enough to jump straight to an alert or a subject profile.
+func (s *Server) search(ctx context.Context, tenantID, q string) (map[string]any, error) {
+	like := q + "%"      // ref prefix
+	contains := "%" + q + "%" // alert-id substring, so "2273" finds ALT-2273
+	alerts, err := queryMaps(ctx, s.pool,
+		`SELECT id, score, threat_type, state, user_ref, account_ref
+		 FROM alerts
+		 WHERE tenant_id=$1 AND (id ILIKE $2 OR user_ref ILIKE $3 OR account_ref ILIKE $3)
+		 ORDER BY created_at DESC LIMIT 6`, tenantID, contains, like)
+	if err != nil {
+		return nil, err
+	}
+	subjects, err := queryMaps(ctx, s.pool,
+		`SELECT au.user_ref, count(a.id)::int AS alerts
+		 FROM app_users au
+		 LEFT JOIN alerts a ON a.tenant_id=au.tenant_id AND a.user_ref=au.user_ref
+		 WHERE au.tenant_id=$1 AND au.user_ref ILIKE $2
+		 GROUP BY au.user_ref ORDER BY alerts DESC LIMIT 5`, tenantID, like)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"alerts": alerts, "subjects": subjects}, nil
+}
+
 // userLocations returns the subject's recent coarse location fixes (geohash
 // only — never raw coordinates) across sessions, newest first. Powers the
 // location map shown for geo-driven risk decisions.

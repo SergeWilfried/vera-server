@@ -141,6 +141,14 @@ func (s *Server) consoleRoutes() []consoleRoute {
 				}
 				return ok(s.detections(ctx, t, days))
 			}),
+		R("GET", `^/v1/console/search$`, rankRead,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				term := strings.TrimSpace(q.Get("q"))
+				if len(term) < 2 {
+					return map[string]any{"alerts": []any{}, "subjects": []any{}}, 200
+				}
+				return ok(s.search(ctx, t, term))
+			}),
 		R("GET", `^/v1/console/detection-analytics$`, rankRead,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				days := 30
