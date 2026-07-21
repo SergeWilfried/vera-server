@@ -63,6 +63,56 @@ func (s *Server) detections(ctx context.Context, tenantID string, days int) ([]m
 		 ORDER BY count DESC`, tenantID, days)
 }
 
+// detectionAnalytics is the richer view behind the Detections page: what the
+// engine actually fired (signal frequency), the daily trend, decision
+// outcomes, and the threat breakdown — over one window.
+func (s *Server) detectionAnalytics(ctx context.Context, tenantID string, days int) (map[string]any, error) {
+	byThreat, err := s.detections(ctx, tenantID, days)
+	if err != nil {
+		return nil, err
+	}
+	// Which scoring signals fired most, unpacking the signals jsonb array.
+	bySignal, err := queryMaps(ctx, s.pool,
+		`SELECT s->>'code' AS code,
+		        max(s->>'label') AS label,
+		        max((s->>'weight')::int) AS weight,
+		        count(*)::int AS count
+		 FROM decisions, jsonb_array_elements(signals) s
+		 WHERE tenant_id=$1 AND created_at > now() - make_interval(days => $2)
+		   AND jsonb_typeof(signals) = 'array'
+		 GROUP BY s->>'code'
+		 ORDER BY count DESC LIMIT 14`, tenantID, days)
+	if err != nil {
+		return nil, err
+	}
+	// Detections per day (alerts raised), for the trend.
+	trend, err := queryMaps(ctx, s.pool,
+		`SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day,
+		        count(*)::int AS count
+		 FROM alerts
+		 WHERE tenant_id=$1 AND created_at > now() - make_interval(days => $2)
+		 GROUP BY 1 ORDER BY 1`, tenantID, days)
+	if err != nil {
+		return nil, err
+	}
+	var hold, stepUp, allow, total int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FILTER (WHERE decision='HOLD')::int,
+		        count(*) FILTER (WHERE decision='STEP_UP')::int,
+		        count(*) FILTER (WHERE decision='ALLOW')::int,
+		        count(*)::int
+		 FROM decisions WHERE tenant_id=$1 AND created_at > now() - make_interval(days => $2)`,
+		tenantID, days).Scan(&hold, &stepUp, &allow, &total); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"byThreat": byThreat,
+		"bySignal": bySignal,
+		"trend":    trend,
+		"outcomes": map[string]any{"hold": hold, "step_up": stepUp, "allow": allow, "total": total},
+	}, nil
+}
+
 // Transaction-risk view: recent scored payments + auth-outcome mix, from decisions.
 // userLocations returns the subject's recent coarse location fixes (geohash
 // only — never raw coordinates) across sessions, newest first. Powers the

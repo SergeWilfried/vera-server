@@ -141,6 +141,14 @@ func (s *Server) consoleRoutes() []consoleRoute {
 				}
 				return ok(s.detections(ctx, t, days))
 			}),
+		R("GET", `^/v1/console/detection-analytics$`, rankRead,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				days := 30
+				if v, err := strconv.Atoi(q.Get("days")); err == nil && v > 0 && v <= 365 {
+					days = v
+				}
+				return ok(s.detectionAnalytics(ctx, t, days))
+			}),
 		R("GET", `^/v1/console/transaction-risk$`, rankRead,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				return ok(s.transactionRisk(ctx, t, limitOf(q, 25, 100)))
