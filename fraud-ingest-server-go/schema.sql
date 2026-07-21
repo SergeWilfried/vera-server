@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS alerts (
   score       integer NOT NULL,
   threat_type text,                         -- classification lands with the scoring engine (step 2)
   signal      text NOT NULL,                -- human-readable reason summary
-  state       text NOT NULL DEFAULT 'Open', -- Open | Contained | Resolved
+  state       text NOT NULL DEFAULT 'Open', -- Open | Contained | Resolved | Dismissed
   txn         jsonb,                        -- held transaction, when applicable
   signals     jsonb NOT NULL DEFAULT '[]',  -- behavioral signals that fired
   disposition text,
@@ -159,6 +159,11 @@ CREATE TABLE IF NOT EXISTS alerts (
   created_at  timestamptz NOT NULL DEFAULT now(),
   updated_at  timestamptz NOT NULL DEFAULT now()
 );
+-- Queue ownership: who is working an alert, and temporary snoozes so a shared
+-- team doesn't collide or drown in noise.
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS assignee      text;
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS assigned_at   timestamptz;
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS snoozed_until timestamptz;
 CREATE INDEX IF NOT EXISTS alerts_queue_idx ON alerts (tenant_id, state, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS cases (

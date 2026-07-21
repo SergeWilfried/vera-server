@@ -186,6 +186,23 @@ func (s *Server) consoleRoutes() []consoleRoute {
 				}
 				return alert, 200
 			}),
+		R("POST", `^/v1/console/alerts/([\w-]+)/assign$`, rankAnalyst,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				// "Assign to me" when no assignee given; explicit assignee reassigns.
+				assignee := str(b, "assignee")
+				if _, ok := b["assignee"]; !ok {
+					assignee = actor.Email
+				}
+				return ok(s.assignAlert(ctx, t, m[1], assignee))
+			}),
+		R("POST", `^/v1/console/alerts/([\w-]+)/snooze$`, rankAnalyst,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				mins := 0
+				if v, ok := b["minutes"].(float64); ok {
+					mins = int(v)
+				}
+				return ok(s.snoozeAlert(ctx, t, m[1], mins))
+			}),
 		R("POST", `^/v1/console/alerts/([\w-]+)/case$`, rankAnalyst,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				caseID, err := s.createCase(ctx, t, m[1], str(b, "assignee"), str(b, "summary"), actor.Email)

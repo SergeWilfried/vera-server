@@ -169,19 +169,47 @@ func (s *Server) activity(ctx context.Context, tenantID string, limit int) ([]ma
 		 ORDER BY at DESC LIMIT $2`, tenantID, limit)
 }
 
+const alertCols = `id, session_id, account_ref, user_ref, score, threat_type, signal,
+	        state, txn, disposition, case_id, assignee, assigned_at,
+	        (snoozed_until IS NOT NULL AND snoozed_until > now()) AS snoozed,
+	        snoozed_until, created_at, updated_at`
+
 func (s *Server) listAlerts(ctx context.Context, tenantID, state string, limit int) ([]map[string]any, error) {
 	if state != "" {
+		// The open queue hides currently-snoozed alerts; other states show all.
+		snoozeFilter := ""
+		if state == "Open" {
+			snoozeFilter = " AND (snoozed_until IS NULL OR snoozed_until <= now())"
+		}
 		return queryMaps(ctx, s.pool,
-			`SELECT id, session_id, account_ref, user_ref, score, threat_type, signal,
-			        state, txn, disposition, case_id, created_at, updated_at
-			 FROM alerts WHERE tenant_id=$1 AND state=$2
+			`SELECT `+alertCols+`
+			 FROM alerts WHERE tenant_id=$1 AND state=$2`+snoozeFilter+`
 			 ORDER BY created_at DESC LIMIT $3`, tenantID, state, limit)
 	}
 	return queryMaps(ctx, s.pool,
-		`SELECT id, session_id, account_ref, user_ref, score, threat_type, signal,
-		        state, txn, disposition, case_id, created_at, updated_at
+		`SELECT `+alertCols+`
 		 FROM alerts WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT $2`,
 		tenantID, limit)
+}
+
+// assignAlert sets (or clears, when assignee is empty) who owns an alert.
+func (s *Server) assignAlert(ctx context.Context, tenantID, id, assignee string) (map[string]any, error) {
+	return queryMap(ctx, s.pool,
+		`UPDATE alerts SET
+		   assignee = NULLIF($3, ''),
+		   assigned_at = CASE WHEN NULLIF($3,'') IS NULL THEN NULL ELSE now() END,
+		   updated_at = now()
+		 WHERE tenant_id=$1 AND id=$2 RETURNING `+alertCols, tenantID, id, assignee)
+}
+
+// snoozeAlert hides an alert from the open queue for the given minutes (0 clears).
+func (s *Server) snoozeAlert(ctx context.Context, tenantID, id string, minutes int) (map[string]any, error) {
+	return queryMap(ctx, s.pool,
+		`UPDATE alerts SET
+		   snoozed_until = CASE WHEN $3 <= 0 THEN NULL
+		                        ELSE now() + make_interval(mins => $3) END,
+		   updated_at = now()
+		 WHERE tenant_id=$1 AND id=$2 RETURNING `+alertCols, tenantID, id, minutes)
 }
 
 func (s *Server) getAlert(ctx context.Context, tenantID, id string) (map[string]any, error) {
