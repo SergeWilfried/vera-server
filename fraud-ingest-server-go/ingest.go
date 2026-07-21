@@ -27,12 +27,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenantID := r.Header.Get("X-Tenant-Id")
-	tenant, ok := s.tenants[tenantID]
-	if !ok {
+	if _, ok := s.getTenant(tenantID); !ok {
 		writeJSON(w, 400, map[string]any{"error": "unknown tenant: " + tenantID})
 		return
 	}
-	if !hmacEqual(tenant.Key, raw, r.Header.Get("X-Signature")) {
+	if !s.verifyTenantSig(tenantID, raw, r.Header.Get("X-Signature")) {
 		log.Printf("✗ signature mismatch tenant=%s", tenantID)
 		writeJSON(w, 401, map[string]any{"error": "bad signature"})
 		return
@@ -141,12 +140,11 @@ func (s *Server) handleTransactions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenantID := r.Header.Get("X-Tenant-Id")
-	tenant, ok := s.tenants[tenantID]
-	if !ok {
+	if _, ok := s.getTenant(tenantID); !ok {
 		writeJSON(w, 400, map[string]any{"error": "unknown tenant: " + tenantID})
 		return
 	}
-	if !hmacEqual(tenant.Key, raw, r.Header.Get("X-Signature")) {
+	if !s.verifyTenantSig(tenantID, raw, r.Header.Get("X-Signature")) {
 		log.Printf("✗ feed signature mismatch tenant=%s", tenantID)
 		writeJSON(w, 401, map[string]any{"error": "bad signature"})
 		return
@@ -283,6 +281,23 @@ func (s *Server) handleScore(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(body.Transaction, &txn)
 	}
 
+	// Idempotent per (tenant, session, txnRef): a bank retrying a timed-out
+	// call gets the stored decision back — same alert, no re-score. The
+	// txnRef is the idempotency key; calls without one are never deduped.
+	if txn.TxnRef != "" {
+		if prior, err := s.getDecisionReplay(ctx, payload.Tenant,
+			payload.SessionID, txn.TxnRef); err != nil {
+			log.Printf("decision replay lookup: %v", err)
+			writeJSON(w, 500, map[string]any{"error": "internal"})
+			return
+		} else if prior != nil {
+			log.Printf("⚖ score txn=%s tenant=%s session=%s -> replay (%v)",
+				txn.TxnRef, payload.Tenant, short(payload.SessionID, 8), prior["decision"])
+			s.writeScoreReplay(w, payload, txn.TxnRef, prior)
+			return
+		}
+	}
+
 	sc, err := s.getScoringContext(ctx, payload.Tenant, payload.SessionID,
 		payload.UserRef, payload.InstallID)
 	if err != nil {
@@ -305,6 +320,17 @@ func (s *Server) handleScore(w http.ResponseWriter, r *http.Request) {
 		InstallID: payload.InstallID, UserRef: payload.UserRef,
 		TxnRef: txn.TxnRef, Txn: body.Transaction,
 		Decision: decision, Result: result})
+	if err == ErrDuplicateDecision {
+		// Concurrent retry won the insert race — serve its stored decision.
+		prior, perr := s.getDecisionReplay(ctx, payload.Tenant, payload.SessionID, txn.TxnRef)
+		if perr != nil || prior == nil {
+			log.Printf("decision replay after conflict: %v", perr)
+			writeJSON(w, 500, map[string]any{"error": "internal"})
+			return
+		}
+		s.writeScoreReplay(w, payload, txn.TxnRef, prior)
+		return
+	}
 	if err != nil {
 		log.Printf("recordDecision: %v", err)
 		writeJSON(w, 500, map[string]any{"error": "internal"})
@@ -344,6 +370,30 @@ func (s *Server) handleScore(w http.ResponseWriter, r *http.Request) {
 		"signals":    result.Signals,
 		"threatType": threatOut,
 		"alertId":    alertOut,
+		"session": map[string]any{
+			"tenantId": payload.Tenant, "sessionId": payload.SessionID,
+			"installId": payload.InstallID, "userRef": userOut,
+		},
+	})
+}
+
+// writeScoreReplay serves a stored decision in the exact shape of a fresh
+// /v1/score response (plus "replay": true for observability), so bank
+// retries are indistinguishable from the original call.
+func (s *Server) writeScoreReplay(w http.ResponseWriter, payload *TokenPayload,
+	txnRef string, prior map[string]any) {
+	var userOut any
+	if payload.UserRef != "" {
+		userOut = payload.UserRef
+	}
+	writeJSON(w, 200, map[string]any{
+		"decision":   prior["decision"],
+		"riskScore":  prior["score"],
+		"reasons":    prior["reasons"],
+		"signals":    prior["signals"],
+		"threatType": prior["threat_type"],
+		"alertId":    prior["alert_id"],
+		"replay":     true,
 		"session": map[string]any{
 			"tenantId": payload.Tenant, "sessionId": payload.SessionID,
 			"installId": payload.InstallID, "userRef": userOut,

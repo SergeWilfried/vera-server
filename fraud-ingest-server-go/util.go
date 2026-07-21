@@ -52,9 +52,13 @@ type TokenPayload struct {
 // the tenant key exactly like the Android token, so /v1/score verifies it
 // through the same path.
 func (s *Server) mintToken(tenantID, sessionID, installID, userRef string) (string, error) {
-	tenant, ok := s.tenants[tenantID]
+	tenant, ok := s.getTenant(tenantID)
 	if !ok {
 		return "", fmt.Errorf("unknown tenant")
+	}
+	signing, ok := tenant.activeKey()
+	if !ok {
+		return "", fmt.Errorf("tenant %s has no active key", tenantID)
 	}
 	p := TokenPayload{Tenant: tenantID, SessionID: sessionID, InstallID: installID,
 		UserRef: userRef, Iat: time.Now().Unix()}
@@ -63,7 +67,7 @@ func (s *Server) mintToken(tenantID, sessionID, installID, userRef string) (stri
 		return "", err
 	}
 	body := base64.RawURLEncoding.EncodeToString(raw)
-	m := hmac.New(sha256.New, tenant.Key)
+	m := hmac.New(sha256.New, signing.Key)
 	m.Write([]byte(body))
 	sig := base64.RawURLEncoding.EncodeToString(m.Sum(nil))
 	return body + "." + sig, nil
@@ -89,14 +93,31 @@ func (s *Server) verifySessionToken(token string) (*TokenPayload, error) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, fmt.Errorf("bad payload")
 	}
-	tenant, ok := s.tenants[p.Tenant]
+	tenant, ok := s.getTenant(p.Tenant)
 	if !ok {
 		return nil, fmt.Errorf("unknown tenant %s", p.Tenant)
 	}
-	m := hmac.New(sha256.New, tenant.Key)
-	m.Write([]byte(body))
 	got, err := b64urlDecode(sig)
-	if err != nil || !hmac.Equal(m.Sum(nil), got) {
+	if err != nil {
+		return nil, fmt.Errorf("bad signature")
+	}
+	// Any live key version (active + retiring) verifies — tokens minted
+	// just before a rotation stay valid through their 1h lifetime.
+	verified := false
+	for attempt := 0; attempt < 2 && !verified; attempt++ {
+		for _, k := range tenant.Keys {
+			m := hmac.New(sha256.New, k.Key)
+			m.Write([]byte(body))
+			if hmac.Equal(m.Sum(nil), got) {
+				verified = true
+				break
+			}
+		}
+		if !verified && attempt == 0 && s.tryReloadTenants() {
+			tenant, _ = s.getTenant(p.Tenant)
+		}
+	}
+	if !verified {
 		return nil, fmt.Errorf("bad signature")
 	}
 	age := time.Now().Unix() - p.Iat

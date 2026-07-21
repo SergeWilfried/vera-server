@@ -186,6 +186,9 @@ public final class SessionManager {
 
     private JSONObject envelope(String type) throws Exception {
         JSONObject o = new JSONObject();
+        // Client-generated id makes uploads dedupable server-side (the SDK
+        // fleet can't be retrofitted later; enforcement can be).
+        o.put("eventId", uuidV7());
         o.put("type", type);
         o.put("sessionId", sessionId.get());
         o.put("installId", installId);

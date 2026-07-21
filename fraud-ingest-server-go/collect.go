@@ -24,6 +24,8 @@ func (s *Server) originAllowed(origin string) bool {
 	if origin == "" {
 		return false
 	}
+	s.tenantMu.RLock()
+	defer s.tenantMu.RUnlock()
 	for _, t := range s.tenants {
 		for _, o := range t.AllowedOrigins {
 			if strings.TrimSpace(o) == origin {
@@ -40,7 +42,7 @@ func (s *Server) authSite(r *http.Request) (string, bool) {
 	tenantID := r.Header.Get("X-Tenant-Id")
 	siteKey := r.Header.Get("X-Site-Key")
 	origin := r.Header.Get("Origin")
-	t, ok := s.tenants[tenantID]
+	t, ok := s.getTenant(tenantID)
 	if !ok || siteKey == "" || t.SiteKey != siteKey {
 		return "", false
 	}

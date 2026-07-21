@@ -104,8 +104,12 @@ Events batch to NDJSON and `POST /v1/collect` on a timer (default 5s) and on
 navigation). Failures re-queue a bounded tail. Envelope per line:
 
 ```json
-{"type":"…","sessionId":"…","installId":"…","userRef":"…","ts":0,"payload":{}}
+{"eventId":"…","type":"…","sessionId":"…","installId":"…","userRef":"…","ts":0,"payload":{}}
 ```
+
+`eventId` is a client-generated UUID stamped once per event (survives the
+re-queue-on-failure path), so the server can dedupe resent batches —
+uploads are at-least-once.
 
 ## Verification
 

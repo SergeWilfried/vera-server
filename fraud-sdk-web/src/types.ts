@@ -2,6 +2,8 @@
 // exactly, so the collector persists web and mobile events through one path.
 
 export interface SdkEvent {
+  /** Client-generated unique id — lets the server dedupe resent batches. */
+  eventId?: string;
   type: string;
   sessionId: string;
   installId: string;

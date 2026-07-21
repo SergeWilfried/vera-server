@@ -3,6 +3,7 @@
 // navigation; fetch(keepalive) otherwise.
 
 import type { SdkConfig, SdkEvent } from './types.js';
+import { randomId } from './session.js';
 
 export class Transport {
   private queue: SdkEvent[] = [];
@@ -35,6 +36,9 @@ export class Transport {
   }
 
   enqueue(ev: SdkEvent): void {
+    // Stamp once at the chokepoint: the failure path re-queues events, and
+    // a stable id is what lets the server drop the resent copies.
+    if (!ev.eventId) ev.eventId = randomId();
     if (this.queue.length < 500) this.queue.push(ev);
   }
 

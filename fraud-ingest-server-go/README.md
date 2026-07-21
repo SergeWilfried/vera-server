@@ -21,6 +21,8 @@ pass unchanged, plus the Go-only `invite` scenario:
     node simulate-sdk.js web    http://localhost:8080   # browser collector + web scoring (Go only)
     node simulate-sdk.js geo    http://localhost:8080   # location integrity (Go only)
     node simulate-sdk.js retry  http://localhost:8080   # webhook outbox retries (Go only)
+    node simulate-sdk.js idem   http://localhost:8080   # idempotent /v1/score (Go only)
+    node simulate-sdk.js keys   http://localhost:8080   # tenant key rotation (Go only)
 
 The `rat` scenario proves the `REMOTE_ACCESS` scoring signal: a known-device
 session with an active screen-share (`PASSIVE_REMOTE_ACCESS`) + scripted input
@@ -38,7 +40,16 @@ earlier raises `IMPOSSIBLE_TRAVEL` (geohash-centroid velocity).
 
 The `retry` scenario proves the webhook outbox: the bank receiver rejects the
 synchronous first attempt, and the Postgres-backed dispatcher redelivers
-(`X-Attempt: 2`) with no client involvement. All five are Go-only
+(`X-Attempt: 2`) with no client involvement.
+
+The `idem` scenario proves `/v1/score` idempotency: retrying an already-
+decided txnRef in the same session replays the stored decision — same
+decision, same alert id, `"replay": true` — while a different txnRef still
+scores fresh.
+
+The `keys` scenario proves per-tenant key management end-to-end: it drives
+the operator CLI (create → rotate → revoke) against the shared DB and shows
+the running server converging without a restart. All seven are Go-only
 (post-freeze), like `invite`.
 
 Covers: behavioral scoring (clean/coached/ato/mule), ledger-only
@@ -141,8 +152,31 @@ Deps: `pgx/v5`, `golang.org/x/crypto` (scrypt). Everything else stdlib.
     SITE_KEY                site_wallet-acme_pub  (public browser-SDK site key)
     SITE_ORIGINS            http://localhost:5199,http://localhost:5173,http://localhost:8099
 
-Tenant HMAC keys live in `main.go` (`TENANTS`) for now, like the Node
-server — move to secret storage before production.
+    MASTER_KEY              (encrypts tenant HMAC keys at rest — set in prod)
+    SDK_KEY                 dev tenant's seeded key (first boot only)
+
+## Tenant key management
+
+Tenant config (webhook, site key, origins) and **versioned HMAC keys** live
+in Postgres; keys are AES-256-GCM-encrypted under `MASTER_KEY` (env now,
+KMS-wrapped later — the schema doesn't change). The server keeps a cache
+with bounded staleness: refreshed every 30s, on auth misses (rate-limited),
+and lazily when older than 5s — so CLI changes apply to a running server
+within seconds, no restart.
+
+Operator CLI (platform-operator actions, deliberately not console routes):
+
+    ./vera-go tenant create <id> [name] [webhook] [siteKey] [originsCSV]
+    ./vera-go tenant list
+    ./vera-go tenant rotate-key <id>       # old key -> 'retiring', still verifies
+    ./vera-go tenant revoke-key <id> <kid>
+
+Secrets print exactly once, at generation. Signing (tokens, webhooks) uses
+the single `active` key; verification accepts `active` + `retiring`, which
+makes rotation zero-downtime for slowly-upgrading SDK fleets. Uploads and
+webhooks carry an `X-Key-Id` header (additive) naming the key version; the
+dev tenant seeds as `wallet-acme`/`k1` from env on first boot, so the
+simulator works out of the box.
 
 ## Parity notes
 
@@ -152,6 +186,11 @@ server — move to secret storage before production.
 - Endpoint semantics, policy bands (55/85), detector thresholds, RBAC
   ranks and webhook/retry behavior mirror the Node server; consult its
   [README](../fraud-ingest-server/README.md) for the full API reference.
+- SDK event envelopes carry a client-generated `eventId` (additive,
+  optional). The server currently ignores it — event dedupe enforcement
+  is deferred until duplicate storage actually costs something — but
+  stamping now means deployed SDK fleets won't need a retrofit when a
+  unique index turns it on.
 - Webhook delivery is a Postgres-backed outbox: the first attempt is
   synchronous (the console response carries real status); failures are
   scheduled in `actions.webhook_next_attempt_at` (5s·2^n jittered, cap 1h,

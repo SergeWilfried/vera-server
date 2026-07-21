@@ -549,9 +549,14 @@ var webhookTypes = map[string]string{
 // the outbox dispatcher owns redelivery — this function never schedules.
 // Delivery is at-least-once: receivers must dedupe on the action `id`.
 func (s *Server) deliverAction(tenantID string, action map[string]any, attempt int) string {
-	tenant := s.tenants[tenantID]
+	tenant, ok := s.getTenant(tenantID)
 	actionID, _ := action["id"].(string)
 	kind, _ := action["kind"].(string)
+	signing, keyOK := tenant.activeKey()
+	if !ok || !keyOK {
+		s.markWebhookResult(context.Background(), actionID, false, "tenant has no active key")
+		return "failed"
+	}
 
 	payload := map[string]any{
 		"id": actionID, "type": webhookTypes[kind], "tenantId": tenantID,
@@ -564,13 +569,15 @@ func (s *Server) deliverAction(tenantID string, action map[string]any, attempt i
 		}
 	}
 	raw, _ := json.Marshal(payload)
-	sig := hmacB64(tenant.Key, raw)
+	sig := hmacB64(signing.Key, raw)
 
 	client := &http.Client{Timeout: 3 * time.Second}
 	req, _ := http.NewRequest("POST", tenant.Webhook, bytes.NewReader(raw))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Tenant-Id", tenantID)
 	req.Header.Set("X-Signature", sig)
+	// The signing key's id lets the receiver rotate its verify key in step.
+	req.Header.Set("X-Key-Id", signing.Kid)
 	req.Header.Set("X-Attempt", strconv.Itoa(attempt))
 
 	resp, err := client.Do(req)

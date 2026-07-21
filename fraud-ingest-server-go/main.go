@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -20,22 +22,15 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// Tenant config: key must match SdkConfig on the device (>= 32 bytes);
-// webhook is where analyst actions are pushed, signed with the same key.
-// SiteKey is a PUBLIC per-tenant identifier for the browser SDK (not a
-// secret); browser telemetry is authed by site key + Origin allowlist.
-type Tenant struct {
-	Key            []byte
-	Webhook        string
-	SiteKey        string
-	AllowedOrigins []string
-}
-
+// Tenant config and versioned HMAC keys live in Postgres (see tenants.go);
+// the in-memory map is a cache, refreshed periodically and on auth misses.
 type Server struct {
-	pool        *pgxpool.Pool
-	tenants     map[string]Tenant
-	consoleKeys map[string]string // machine/service keys -> tenant
-	corsOrigins map[string]bool   // allowed browser origins for /v1/console/*
+	pool           *pgxpool.Pool
+	tenantMu       sync.RWMutex
+	tenants        map[string]Tenant
+	lastTenantLoad time.Time
+	consoleKeys    map[string]string // machine/service keys -> tenant
+	corsOrigins    map[string]bool   // allowed browser origins for /v1/console/*
 }
 
 func env(k, def string) string {
@@ -58,20 +53,29 @@ func main() {
 	}
 
 	s := &Server{
-		pool: pool,
-		tenants: map[string]Tenant{
-			"wallet-acme": {
-				Key:            []byte("0123456789abcdef0123456789abcdef"),
-				Webhook:        env("CORE_WEBHOOK", "http://localhost:8090/core-banking/hooks"),
-				SiteKey:        env("SITE_KEY", "site_wallet-acme_pub"),
-				AllowedOrigins: strings.Split(env("SITE_ORIGINS", "http://localhost:5199,http://localhost:5173,http://localhost:8099"), ","),
-			},
-		},
+		pool:    pool,
+		tenants: map[string]Tenant{},
 		consoleKeys: map[string]string{
 			env("CONSOLE_KEY", "dev-console-key"): "wallet-acme",
 		},
 		corsOrigins: map[string]bool{},
 	}
+
+	// Operator CLI: `vera-go tenant create|list|rotate-key|revoke-key …`
+	if len(os.Args) > 1 && os.Args[1] == "tenant" {
+		if err := runTenantCLI(pool, os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	if err := s.seedTenant(ctx); err != nil {
+		log.Fatalf("tenant seed: %v", err)
+	}
+	if err := s.loadTenants(ctx); err != nil {
+		log.Fatalf("tenant load: %v", err)
+	}
+	go s.tenantRefresher(ctx)
 	// CORS_ORIGIN may be a comma-separated list; Vite dev is 5199 or 5173.
 	for _, o := range strings.Split(env("CORS_ORIGIN", "http://localhost:5199,http://localhost:5173"), ",") {
 		if o = strings.TrimSpace(o); o != "" {
@@ -79,12 +83,6 @@ func main() {
 		}
 	}
 
-	for id := range s.tenants {
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO tenants (id) VALUES ($1) ON CONFLICT (id) DO NOTHING`, id); err != nil {
-			log.Fatalf("tenant seed: %v", err)
-		}
-	}
 	adminEmail := env("CONSOLE_ADMIN_EMAIL", "admin@demobank.cz")
 	seeded, err := s.seedAdmin(ctx, "wallet-acme", adminEmail,
 		env("CONSOLE_ADMIN_PASSWORD", "admin-dev-password"))

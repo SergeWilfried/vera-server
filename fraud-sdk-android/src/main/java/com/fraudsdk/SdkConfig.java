@@ -6,6 +6,7 @@ public final class SdkConfig {
     public final Environment environment;
     public final String ingestUrl;
     public final byte[] tenantHmacKey;     // per-tenant signing key (provisioned at onboarding)
+    public final String tenantKeyId;       // key version ("kid") of tenantHmacKey; "" if unversioned
     public final String tenantHashSalt;    // per-tenant salt for Hashing.hash()
     public final long idleTimeoutMs;
     public final int maxBatchSize;
@@ -20,6 +21,7 @@ public final class SdkConfig {
         this.environment = b.environment;
         this.ingestUrl = b.ingestUrl != null ? b.ingestUrl : b.environment.defaultIngestUrl();
         this.tenantHmacKey = b.tenantHmacKey;
+        this.tenantKeyId = b.tenantKeyId;
         this.tenantHashSalt = b.tenantHashSalt;
         this.idleTimeoutMs = b.idleTimeoutMs;
         this.maxBatchSize = b.maxBatchSize;
@@ -35,6 +37,7 @@ public final class SdkConfig {
         private Environment environment = Environment.SANDBOX;
         private String ingestUrl;
         private byte[] tenantHmacKey;
+        private String tenantKeyId = "";
         private String tenantHashSalt = "";
         private long idleTimeoutMs = 5 * 60 * 1000L;
         private int maxBatchSize = 50;
@@ -46,6 +49,7 @@ public final class SdkConfig {
         public Builder environment(Environment v) { this.environment = v; return this; }
         public Builder ingestUrl(String v) { this.ingestUrl = v; return this; }
         public Builder tenantHmacKey(byte[] v) { this.tenantHmacKey = v; return this; }
+        public Builder tenantKeyId(String v) { this.tenantKeyId = v != null ? v : ""; return this; }
         public Builder tenantHashSalt(String v) { this.tenantHashSalt = v; return this; }
         public Builder idleTimeoutMs(long v) { this.idleTimeoutMs = v; return this; }
         public Builder maxBatchSize(int v) { this.maxBatchSize = v; return this; }

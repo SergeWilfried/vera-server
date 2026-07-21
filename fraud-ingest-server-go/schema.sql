@@ -7,6 +7,26 @@ CREATE TABLE IF NOT EXISTS tenants (
   name        text NOT NULL DEFAULT '',
   created_at  timestamptz NOT NULL DEFAULT now()
 );
+-- Per-tenant config moved out of server source: webhook target, public
+-- browser site key, browser Origin allowlist (csv), lifecycle status.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS webhook_url     text;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS site_key        text;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS allowed_origins text;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS status          text NOT NULL DEFAULT 'active';
+
+-- Versioned tenant HMAC keys (SDK batch signatures, session tokens, webhook
+-- signing). key_enc is AES-256-GCM under MASTER_KEY (nonce || ciphertext) —
+-- the DB and its backups never hold usable keys. Signing uses the single
+-- 'active' key; verification accepts 'active' + 'retiring', which is what
+-- makes rotation zero-downtime for slowly-upgrading SDK fleets.
+CREATE TABLE IF NOT EXISTS tenant_keys (
+  tenant_id  text NOT NULL REFERENCES tenants(id),
+  kid        text NOT NULL,
+  key_enc    bytea NOT NULL,
+  state      text NOT NULL DEFAULT 'active',   -- active | retiring | revoked
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, kid)
+);
 
 -- Pseudonymous subjects (userRef = per-tenant salted SHA-256, never raw PII).
 CREATE TABLE IF NOT EXISTS app_users (
@@ -80,9 +100,19 @@ CREATE TABLE IF NOT EXISTS decisions (
   score       integer NOT NULL,             -- 0–100, console policy bands
   reasons     jsonb NOT NULL DEFAULT '[]',
   signals     jsonb NOT NULL DEFAULT '[]',  -- [{code, label, weight, evidence}]
+  threat_type text,                         -- classification, for replay fidelity
   alert_id    text,                         -- set when the decision raised an alert
   created_at  timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS threat_type text;
+-- /v1/score is idempotent per (tenant, session, txnRef): a bank retrying a
+-- timed-out call must get the SAME decision and alert back, never a second
+-- open alert. Pre-index cleanup keeps the earliest row (first decision wins).
+DELETE FROM decisions d USING decisions k
+ WHERE d.tenant_id = k.tenant_id AND d.session_id = k.session_id
+   AND d.txn_ref = k.txn_ref AND d.txn_ref IS NOT NULL AND d.id > k.id;
+CREATE UNIQUE INDEX IF NOT EXISTS decisions_idem_idx
+  ON decisions (tenant_id, session_id, txn_ref) WHERE txn_ref IS NOT NULL;
 CREATE INDEX IF NOT EXISTS decisions_tenant_idx ON decisions (tenant_id, created_at);
 
 -- Bank-side transaction feed: the tenant's core banking pushes settled

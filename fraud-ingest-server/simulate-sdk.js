@@ -24,6 +24,7 @@ const SCENARIO = args.find(a => !a.startsWith('http')) || 'wire';
 
 const TENANT = 'wallet-acme';
 const KEY = Buffer.from('0123456789abcdef0123456789abcdef');
+const KEY_ID = process.env.KEY_ID || 'k1';   // key version advertised on uploads
 const DAY = 86400000;
 
 const b64url = b => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -37,14 +38,19 @@ function mintToken(sessionId, installId, userRef) {
   return body + '.' + sig;
 }
 
+/** Client-generated event id, stamped like the real SDKs do — the server
+ *  may use it to dedupe resent batches (at-least-once uploads). */
+const stamp = (events) =>
+  events.map(e => e.eventId ? e : { eventId: crypto.randomUUID(), ...e });
+
 async function sendBatch(installId, events) {
-  const gz = zlib.gzipSync(events.map(e => JSON.stringify(e)).join('\n'));
+  const gz = zlib.gzipSync(stamp(events).map(e => JSON.stringify(e)).join('\n'));
   const sig = crypto.createHmac('sha256', KEY).update(gz).digest('base64');
   const r = await fetch(BASE + '/v1/events', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-ndjson', 'Content-Encoding': 'gzip',
                'X-Tenant-Id': TENANT, 'X-Install-Id': installId,
-               'X-Signature': sig, 'X-Sdk': 'simulator/0.2.0' },
+               'X-Signature': sig, 'X-Key-Id': KEY_ID, 'X-Sdk': 'simulator/0.2.0' },
     body: gz,
   });
   if (r.status !== 200) throw new Error('/v1/events -> ' + r.status + ' ' + await r.text());
@@ -61,7 +67,7 @@ async function sendCollect(installId, events) {
     headers: { 'Content-Type': 'application/x-ndjson', 'X-Tenant-Id': TENANT,
                'X-Site-Key': SITE_KEY, 'X-Install-Id': installId, 'X-Sdk': 'web/0.1.0',
                'Origin': WEB_ORIGIN },
-    body: events.map(e => JSON.stringify(e)).join('\n'),
+    body: stamp(events).map(e => JSON.stringify(e)).join('\n'),
   });
   if (r.status !== 200) throw new Error('/v1/collect -> ' + r.status + ' ' + await r.text());
   return r.json();
@@ -620,6 +626,93 @@ const scenarios = {
     report('geo/travel', { decision: 'STEP_UP', threatType: 'Account Takeover' }, got2);
     if (!(got2.signals || []).some((sg) => sg.code === 'IMPOSSIBLE_TRAVEL')) {
       console.log('  ✗ expected an IMPOSSIBLE_TRAVEL signal'); process.exitCode = 1;
+    }
+  },
+
+  /** Per-tenant key management (Go server only). Drives the operator CLI
+   *  (`vera-go tenant …`) against the shared DB, then proves the running
+   *  server picks changes up without a restart: create a tenant -> its key
+   *  signs batches; rotate -> BOTH old (retiring) and new (active) keys
+   *  verify; revoke old -> old 401s, new still works. */
+  async keys() {
+    const { execFileSync } = require('child_process');
+    const path = require('path');
+    const GO_DIR = process.env.VERA_GO_DIR ||
+      path.join(__dirname, '..', 'fraud-ingest-server-go');
+    const cli = (...args) =>
+      execFileSync('go', ['run', '.', 'tenant', ...args],
+        { cwd: GO_DIR, encoding: 'utf8' });
+    const parseKey = (out) => {
+      const m = out.match(/kid=(\S+) key=(\S+)/);
+      return { kid: m[1], key: m[2] };
+    };
+
+    const tid = 't-rot-' + crypto.randomUUID().slice(0, 8);
+    const k1 = parseKey(cli('create', tid, 'Rotation Test'));
+
+    // Signed batch under a freshly created tenant (server cache reloads on miss).
+    const send = async (key, kid) => {
+      const s = crypto.randomUUID(), install = crypto.randomUUID();
+      const events = [{ eventId: crypto.randomUUID(), type: 'SCREEN_VIEWED',
+        sessionId: s, installId: install, ts: Date.now(), payload: { screenId: 'home' } }];
+      const gz = zlib.gzipSync(events.map(e => JSON.stringify(e)).join('\n'));
+      const sig = crypto.createHmac('sha256', Buffer.from(key)).update(gz).digest('base64');
+      const r = await fetch(BASE + '/v1/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-ndjson', 'Content-Encoding': 'gzip',
+                   'X-Tenant-Id': tid, 'X-Install-Id': install,
+                   'X-Signature': sig, 'X-Key-Id': kid, 'X-Sdk': 'simulator/0.2.0' },
+        body: gz,
+      });
+      return r.status;
+    };
+
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const createOk = await send(k1.key, k1.kid) === 200;
+
+    const k2 = parseKey(cli('rotate-key', tid));
+    await sleep(1200);   // reload-on-miss is rate-limited to 1/s
+    const oldDuringRotation = await send(k1.key, k1.kid) === 200;  // retiring key
+    const newAfterRotation = await send(k2.key, k2.kid) === 200;   // active key
+
+    cli('revoke-key', tid, k1.kid);
+    await sleep(6000);   // revocation propagates via the 5s staleness bound
+    const revokedRejected = await send(k1.key, k1.kid) === 401;
+    const activeSurvives = await send(k2.key, k2.kid) === 200;
+
+    const ok = createOk && oldDuringRotation && newAfterRotation &&
+      revokedRejected && activeSurvives;
+    console.log(`\n${ok ? '✓' : '✗'} keys: tenant=${tid} create=${createOk} ` +
+        `rotate old/new=${oldDuringRotation}/${newAfterRotation} ` +
+        `revoked-rejected=${revokedRejected} active-survives=${activeSurvives}`);
+    if (!ok) process.exitCode = 1;
+  },
+
+  /** Idempotent /v1/score (Go server only): a bank retrying the same txnRef
+   *  in the same session must get the SAME decision and alert back — never
+   *  a second open alert — while a different txnRef still scores fresh. */
+  async idem() {
+    const { sessionId, user, alertId } = await scenarios.coached();
+    const token = mintToken(sessionId, user.install, user.ref);
+
+    // Retry of the already-decided transaction -> stored decision replayed.
+    const again = await sendScore(token,
+      { txnRef: 'TXN-COACHED', amount: 240000, currency: 'CZK', payeeIsNew: true });
+    // A different transaction in the same session -> scored fresh.
+    const fresh = await sendScore(token,
+      { txnRef: 'TXN-COACHED-2', amount: 1000, currency: 'CZK', payeeIsNew: false });
+
+    const ok = again.replay === true && again.decision === 'HOLD' &&
+      again.alertId === alertId && again.threatType === 'APP Scam' &&
+      Array.isArray(again.signals) && again.signals.length > 0 &&
+      fresh.replay === undefined;
+    console.log(`\n${ok ? '✓' : '✗'} idem: replay=${again.replay} ` +
+        `decision=${again.decision} alert=${again.alertId}` +
+        `${again.alertId === alertId ? ' (same)' : ` != ${alertId} DUPLICATE!`} · ` +
+        `fresh txn replay=${fresh.replay} decision=${fresh.decision}`);
+    if (!ok) {
+      console.log('  DETAIL', { again, fresh, originalAlert: alertId });
+      process.exitCode = 1;
     }
   },
 

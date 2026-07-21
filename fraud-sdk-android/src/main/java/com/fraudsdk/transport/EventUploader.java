@@ -79,6 +79,11 @@ public final class EventUploader {
             c.setRequestProperty("X-Tenant-Id", config.tenantId);
             c.setRequestProperty("X-Install-Id", sessions.installId());
             c.setRequestProperty("X-Signature", sig);
+            // Advertise which key version signed this batch (additive; the
+            // server also verifies by trying all live keys when absent).
+            if (!config.tenantKeyId.isEmpty()) {
+                c.setRequestProperty("X-Key-Id", config.tenantKeyId);
+            }
             c.setRequestProperty("X-Sdk", "android/0.2.0");
 
             try (OutputStream os = c.getOutputStream()) { os.write(body); }

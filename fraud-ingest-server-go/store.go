@@ -6,9 +6,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -417,14 +419,38 @@ func (s *Server) recordDecision(ctx context.Context, d DecisionRecord) (string, 
 	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO decisions (tenant_id, session_id, user_ref, txn_ref, txn,
-		                        decision, score, reasons, signals, alert_id)
-		 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6, $7, $8, $9, NULLIF($10, ''))`,
+		                        decision, score, reasons, signals, threat_type, alert_id)
+		 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6, $7, $8, $9,
+		         NULLIF($10, ''), NULLIF($11, ''))`,
 		d.TenantID, d.SessionID, d.UserRef, d.TxnRef, jsonArg(d.Txn),
 		d.Decision, d.Result.Score, string(reasonsJSON), string(signalsJSON),
-		alertID); err != nil {
+		d.Result.ThreatType, alertID); err != nil {
+		// A concurrent retry beat us to the (tenant, session, txnRef) slot;
+		// the rollback also discards our duplicate alert. Caller replays.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return "", ErrDuplicateDecision
+		}
 		return "", err
 	}
 	return alertID, tx.Commit(ctx)
+}
+
+// ErrDuplicateDecision: this (tenant, session, txnRef) was already decided.
+var ErrDuplicateDecision = errors.New("duplicate decision")
+
+// getDecisionReplay returns the stored decision for an idempotent /v1/score
+// replay, or nil when this txnRef hasn't been decided in this session.
+func (s *Server) getDecisionReplay(ctx context.Context, tenantID, sessionID, txnRef string) (map[string]any, error) {
+	rows, err := queryMaps(ctx, s.pool,
+		`SELECT decision, score, reasons, signals, threat_type, alert_id
+		 FROM decisions
+		 WHERE tenant_id=$1 AND session_id=$2 AND txn_ref=$3
+		 ORDER BY id LIMIT 1`, tenantID, sessionID, txnRef)
+	if err != nil || len(rows) == 0 {
+		return nil, err
+	}
+	return rows[0], nil
 }
 
 // ---------- bank transaction feed ----------
