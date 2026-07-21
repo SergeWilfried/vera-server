@@ -44,13 +44,27 @@ func main() {
 	ctx := context.Background()
 	dbURL := env("DATABASE_URL", "postgres://localhost/vera_fraud")
 
-	pool, err := pgxpool.New(ctx, dbURL)
+	// Fail fast and loud: PaaS port scanners (Render etc.) only see a healthy
+	// service once ListenAndServe runs, so a silent hang on an unreachable DB
+	// looks like "no open ports" with no clue. pgx has NO connect timeout by
+	// default — set one, and log the target (never the credentials).
+	dbCfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		log.Fatalf("DATABASE_URL: %v", err)
+	}
+	if dbCfg.ConnConfig.ConnectTimeout == 0 {
+		dbCfg.ConnConfig.ConnectTimeout = 10 * time.Second
+	}
+	log.Printf("Connecting to Postgres at %s:%d/%s …",
+		dbCfg.ConnConfig.Host, dbCfg.ConnConfig.Port, dbCfg.ConnConfig.Database)
+	pool, err := pgxpool.NewWithConfig(ctx, dbCfg)
 	if err != nil {
 		log.Fatalf("db pool: %v", err)
 	}
 	if _, err := pool.Exec(ctx, schemaSQL); err != nil {
-		log.Fatalf("schema apply failed — is Postgres running and the db created? %v", err)
+		log.Fatalf("schema apply failed — is Postgres reachable and the db created? %v", err)
 	}
+	log.Printf("Postgres OK, schema applied")
 
 	s := &Server{
 		pool:    pool,
