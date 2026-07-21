@@ -22,8 +22,10 @@ const args = process.argv.slice(2);
 const BASE = args.find(a => a.startsWith('http')) || 'http://localhost:8080';
 const SCENARIO = args.find(a => !a.startsWith('http')) || 'wire';
 
-const TENANT = 'wallet-acme';
-const KEY = Buffer.from('0123456789abcdef0123456789abcdef');
+const TENANT = process.env.TENANT || 'wallet-acme';
+// Tenant HMAC key — override with SDK_KEY to target a server whose key was
+// rotated (e.g. the deployed instance): SDK_KEY=<key> KEY_ID=<kid> node …
+const KEY = Buffer.from(process.env.SDK_KEY || '0123456789abcdef0123456789abcdef');
 const KEY_ID = process.env.KEY_ID || 'k1';   // key version advertised on uploads
 const DAY = 86400000;
 
@@ -1069,6 +1071,66 @@ const scenarios = {
     await scenarios.ato(); await scenarios.mule();
     await scenarios.feedmule(); await scenarios.agent();
     await scenarios.actions(); await scenarios.auth();
+  },
+
+  /** Populate a fresh database with a broad, realistic demo dataset — a
+   *  spread across every threat typology, plus cases, ledger flows for the
+   *  graph, and auto-opened AML files. Not a test (no assertions to fail);
+   *  safe to run repeatedly. Target + keys are configurable, so the same
+   *  command seeds local or the deployed server:
+   *    node simulate-sdk.js seed <baseUrl>
+   *    SDK_KEY=<rotated> KEY_ID=<kid> CONSOLE_KEY=<key> \
+   *      node simulate-sdk.js seed https://…            (deployed) */
+  async seed() {
+    const H = { 'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + (process.env.CONSOLE_KEY || 'dev-console-key') };
+    const run = async (name, fn) => {
+      try { await fn(); }
+      catch (e) { console.log(`  · ${name} skipped: ${e.message.split('\n')[0]}`); }
+    };
+
+    console.log('Seeding demo data …');
+    // Clean ALLOW decisions — volume for the Transaction Risk stream.
+    for (let i = 0; i < 8; i++) await run('clean', scenarios.clean);
+    // A spread of held alerts across every typology.
+    for (let i = 0; i < 3; i++) {
+      await run('coached', scenarios.coached);   // APP scam
+      await run('ato', scenarios.ato);           // account takeover
+      await run('mule', scenarios.mule);         // money mule
+    }
+    await run('agent', scenarios.agent);         // agent commission fraud
+    await run('feedmule', scenarios.feedmule);   // ledger-only mule
+    await run('rat', scenarios.rat);             // remote access / ODF
+    await run('web', scenarios.web);             // browser / headless ATO
+    await run('geo', scenarios.geo);             // mock-GPS + impossible travel
+    await run('graph', scenarios.graph);         // follow-the-money + device links
+    await run('aml', scenarios.aml);             // fraud → auto-opened AML files
+
+    // Open a few investigation cases from the freshest open alerts so Case
+    // Management isn't empty for a demo.
+    try {
+      const open = await fetch(`${BASE}/v1/console/alerts?state=Open`, { headers: H })
+        .then(r => r.json());
+      const pick = (Array.isArray(open) ? open : []).slice(0, 4);
+      let opened = 0;
+      for (const a of pick) {
+        const r = await fetch(`${BASE}/v1/console/alerts/${a.id}/case`, {
+          method: 'POST', headers: H,
+          body: JSON.stringify({ assignee: 'P. Hruba', summary: a.signal }),
+        });
+        if (r.ok) opened++;
+      }
+      console.log(`  · opened ${opened} investigation case(s)`);
+    } catch (e) { console.log(`  · cases skipped: ${e.message.split('\n')[0]}`); }
+
+    const stats = await fetch(`${BASE}/stats`).then(r => r.json()).catch(() => ({}));
+    const alerts = await fetch(`${BASE}/v1/console/alerts`, { headers: H })
+      .then(r => r.json()).catch(() => []);
+    const cases = await fetch(`${BASE}/v1/console/cases`, { headers: H })
+      .then(r => r.json()).catch(() => []);
+    console.log(`\n✓ seed complete — ${Array.isArray(alerts) ? alerts.length : '?'} alerts, ` +
+      `${Array.isArray(cases) ? cases.length : '?'} cases, ` +
+      `${Object.values(stats).reduce((a, b) => a + (Number(b) || 0), 0)} events ingested.`);
   },
 };
 
