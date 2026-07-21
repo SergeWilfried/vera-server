@@ -207,6 +207,10 @@ func (s *Server) consoleRoutes() []consoleRoute {
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				return ok(s.getUserProfile(ctx, t, m[1]))
 			}),
+		R("GET", `^/v1/console/users/([\w-]+)/locations$`, rankRead,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				return ok(s.userLocations(ctx, t, m[1]))
+			}),
 		R("GET", `^/v1/console/sessions/([\w-]+)/events$`, rankRead,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				return ok(s.getSessionEvents(ctx, t, m[1]))

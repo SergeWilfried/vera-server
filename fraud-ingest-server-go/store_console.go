@@ -64,6 +64,23 @@ func (s *Server) detections(ctx context.Context, tenantID string, days int) ([]m
 }
 
 // Transaction-risk view: recent scored payments + auth-outcome mix, from decisions.
+// userLocations returns the subject's recent coarse location fixes (geohash
+// only — never raw coordinates) across sessions, newest first. Powers the
+// location map shown for geo-driven risk decisions.
+func (s *Server) userLocations(ctx context.Context, tenantID, userRef string) ([]map[string]any, error) {
+	// Location events carry no user_ref of their own — they're tied to the
+	// user through their session (same join the scoring context uses).
+	return queryMaps(ctx, s.pool,
+		`SELECT e.payload->>'geohash' AS geohash,
+		        coalesce((e.payload->>'mock')::bool, false) AS mock,
+		        e.session_id, e.ts
+		 FROM events e
+		 JOIN sessions s ON s.tenant_id = e.tenant_id AND s.session_id = e.session_id
+		 WHERE e.tenant_id=$1 AND s.user_ref=$2
+		   AND e.type='PASSIVE_LOCATION_COARSE' AND e.payload ? 'geohash'
+		 ORDER BY e.ts DESC LIMIT 25`, tenantID, userRef)
+}
+
 func (s *Server) transactionRisk(ctx context.Context, tenantID string, limit int) (map[string]any, error) {
 	stream, err := queryMaps(ctx, s.pool,
 		`SELECT session_id, user_ref, txn_ref, txn, decision, score,
