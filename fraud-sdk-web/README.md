@@ -93,6 +93,8 @@ records inter-key timing, never the characters typed.
 - `FraudSdk.session().getToken()` — the minted session token (`X-Fraud-Session`).
 - `FraudSdk.captureKeystrokes(el, fieldId)` — opt-in keystroke dynamics.
 - `FraudSdk.flush()` — force-upload the queue (e.g. right before a `/score`).
+- `FraudSdk.onLocalRisk(cb)` — subscribe to locally-known risk (`{ level, reasons }`); fires immediately and on every change, so the host app can raise an anti-scam banner with no server round-trip.
+- `FraudSdk.reportRemoteAccess(active)` — a native/webview shell reports screen-share / remote-control it detected (e.g. an Android `VirtualDisplay` from AnyDesk); raises local risk **and** emits `PASSIVE_REMOTE_ACCESS` so the server scores `REMOTE_ACCESS`.
 - `FraudSdk.hash(value)` — SHA-256 hex for PII.
 
 `config`: `{ tenantId, siteKey, collectorUrl?, sdk?, flushIntervalMs? }`.

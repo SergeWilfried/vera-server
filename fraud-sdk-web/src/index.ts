@@ -19,6 +19,13 @@ import { attachKeystrokes } from './collectors/keystroke.js';
 import { attachNav } from './collectors/nav.js';
 import { BusinessEvent } from './events.js';
 
+/** Locally-known risk the host app can react to immediately, with no server
+ *  round-trip — e.g. to show an anti-scam banner while a transfer is in flight. */
+export interface LocalRisk {
+  level: 'none' | 'warn';
+  reasons: string[]; // e.g. 'AUTOMATION', 'SCREEN_SHARE'
+}
+
 interface State {
   cfg: Required<SdkConfig>;
   installId: string;
@@ -27,9 +34,23 @@ interface State {
   token?: string;
   transport: Transport;
   detach: Array<() => void>;
+  headless: boolean;
+  remoteActive: boolean;
+  riskCb?: (r: LocalRisk) => void;
 }
 
 let state: State | null = null;
+
+function localRisk(): LocalRisk {
+  const reasons: string[] = [];
+  if (state?.headless) reasons.push('AUTOMATION');
+  if (state?.remoteActive) reasons.push('SCREEN_SHARE');
+  return { level: reasons.length ? 'warn' : 'none', reasons };
+}
+
+function emitLocalRisk(): void {
+  state?.riskCb?.(localRisk());
+}
 
 function resolveBase(url?: string): string {
   if (url) return url;
@@ -101,11 +122,13 @@ export const FraudSdk = {
     const installId = getInstallId();
     const sessionId = randomId();
     const transport = new Transport(cfg, installId);
-    state = { cfg, installId, sessionId, transport, detach: [] };
+    const fp = fingerprint();
+    state = { cfg, installId, sessionId, transport, detach: [],
+              headless: fp.headless, remoteActive: false };
     transport.start();
 
     // Passive capture.
-    enqueue('PASSIVE_WEB_FINGERPRINT', fingerprint());
+    enqueue('PASSIVE_WEB_FINGERPRINT', fp);
     const getUser = () => state?.userRef;
     state.detach.push(attachMouse(installId, sessionId, getUser, (e) => transport.enqueue(e)));
     state.detach.push(attachNav(installId, sessionId, getUser, (e) => transport.enqueue(e)));
@@ -124,6 +147,33 @@ export const FraudSdk = {
       attachKeystrokes(el, fieldId, state.installId, state.sessionId, () => state?.userRef,
         (e) => state?.transport.enqueue(e)),
     );
+  },
+
+  /** Subscribe to locally-known risk (automation, reported screen-share). Fires
+   *  immediately with the current state, then on every change — so the host app
+   *  can raise an anti-scam banner the instant a tell appears, no server needed. */
+  onLocalRisk(cb: (r: LocalRisk) => void): void {
+    if (!state) return;
+    state.riskCb = cb;
+    emitLocalRisk();
+  },
+
+  /** Report an environment signal the SDK can't see from the page itself.
+   *  A native/webview shell that detects screen-sharing or a remote-control
+   *  tool (e.g. an Android VirtualDisplay from AnyDesk/TeamViewer) calls this;
+   *  it raises local risk for onLocalRisk subscribers AND emits a
+   *  PASSIVE_REMOTE_ACCESS event so the server scores REMOTE_ACCESS. In a
+   *  pure-web demo with no native shell, a control drives it to show the UX. */
+  reportRemoteAccess(active: boolean): void {
+    if (!state) return;
+    state.remoteActive = !!active;
+    if (active) {
+      enqueue('PASSIVE_REMOTE_ACCESS', {
+        screenShareLikely: true, extraDisplays: 1,
+        accessibilitySuspect: false, accessibilityMatches: [],
+      });
+    }
+    emitLocalRisk();
   },
 
   /** Force-upload queued events (e.g. right before a critical API call). */

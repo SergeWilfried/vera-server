@@ -75,6 +75,37 @@ transfer from ALLOW into STEP_UP. In a real customer's Chrome that signal is
 absent and "Pay landlord" clears as a clean **ALLOW**. The large transfer reaches
 HOLD on behavioural signals alone (15+25+25+25 = 90) — headless or not.
 
+## Anti-scam banner — local reaction, no server round-trip
+
+Toggle **"Simulate screen-share"** in the Verawall panel and a warning banner
+appears instantly at the top of the app:
+
+> 🛡️ **Screen sharing detected on this device** — if someone phoned you and asked
+> to install AnyDesk/TeamViewer, or is watching your screen, hang up.
+
+This is the scam-in-progress interstitial banks ship to cut APP-scam losses. Two
+things fire from one call:
+
+- **Immediately, locally:** the SDK raises `onLocalRisk({ level:'warn',
+  reasons:['SCREEN_SHARE'] })` and the app shows the banner — no network hop,
+  because the scam is happening *now*.
+- **On the next transfer:** the same call emitted a `PASSIVE_REMOTE_ACCESS`
+  event, so the backend's `/v1/score` verdict carries `REMOTE_ACCESS (+35)`
+  ("screen sharing active") — visible in the Verawall panel.
+
+**Honest boundary:** a browser page *cannot* detect AnyDesk or screen capture —
+those APIs don't exist, browsers block them on purpose. The detection comes from
+a **native/webview shell** (Android `VirtualDisplay`, screen-recording callback,
+remote-control accessibility services) that reports it into the web SDK:
+
+```js
+FraudSdk.onLocalRisk((risk) => showBannerIf(risk.reasons.includes('SCREEN_SHARE')));
+// native shell, on detecting screen-share:
+FraudSdk.reportRemoteAccess(true);   // → local banner + PASSIVE_REMOTE_ACCESS to server
+```
+
+In this pure-web demo the checkbox stands in for that native shell.
+
 ## How the SDK is used (see `index.html`)
 
 ```js

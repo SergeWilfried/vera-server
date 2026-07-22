@@ -67,6 +67,21 @@
   .live { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
   .live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
   code { background: #f1f4f7; border-radius: 4px; padding: 1px 5px; font-size: 11.5px; }
+
+  /* Anti-scam banner — raised locally by the SDK the instant screen-share is
+     reported, before any transfer or server call. */
+  .scam-banner { display: none; align-items: flex-start; gap: 12px; background: #fff4e5;
+    border: 1px solid #f0c37a; border-left: 4px solid var(--warn); border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 18px; }
+  .scam-banner .sb-icon { font-size: 20px; line-height: 1.1; }
+  .scam-banner .sb-head { font-weight: 800; font-size: 14px; color: #8a5200; margin-bottom: 3px; }
+  .scam-banner .sb-sub { font-size: 12.5px; color: #6b4c15; line-height: 1.5; }
+
+  .demo-ctl { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--line); }
+  .demo-ctl label { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600;
+    color: var(--muted); text-transform: none; letter-spacing: 0; margin: 0; cursor: pointer; }
+  .demo-ctl input { width: auto; }
+  .demo-ctl .hint { font-size: 10.5px; color: var(--muted); margin-top: 5px; }
 </style>
 </head>
 <body>
@@ -76,6 +91,9 @@
     <div class="brand">Demo Bank</div>
     <div class="who" id="who"></div>
   </div>
+
+  <!-- SDK-raised anti-scam banner (local, no server round-trip) -->
+  <div class="scam-banner" id="scamBanner"></div>
 
   <div class="app">
     <!-- LEFT: the banking app -->
@@ -92,6 +110,10 @@
       </div>
       <div id="vwbody">
         <div class="status">Waiting for a session…</div>
+      </div>
+      <div class="demo-ctl">
+        <label><input type="checkbox" id="simShare" /> Simulate screen-share</label>
+        <div class="hint">A native/webview shell reports this via <code>FraudSdk.reportRemoteAccess()</code>. A browser page can't detect AnyDesk on its own.</div>
       </div>
     </aside>
   </div>
@@ -130,6 +152,19 @@ function vwDecision(d) {
     ${d.threatType ? `<div class="muted" style="margin-top:8px">Classification: <b>${d.threatType}</b>${d.alertId ? ` · alert ${d.alertId}` : ''}</div>` : ''}
     <div style="margin-top:14px" class="tag">Signals that fired</div>
     ${sigs || '<div class="muted" style="padding-top:8px">No risk signals.</div>'}`;
+}
+
+// ---------- anti-scam banner (driven by the SDK's local risk hook) ----------
+function renderBanner(risk) {
+  const el = $('scamBanner');
+  if (!risk || !risk.reasons.includes('SCREEN_SHARE')) { el.style.display = 'none'; return; }
+  el.style.display = 'flex';
+  el.innerHTML = `
+    <div class="sb-icon">🛡️</div>
+    <div>
+      <div class="sb-head">Screen sharing detected on this device</div>
+      <div class="sb-sub">If someone phoned you and asked to install an app like <b>AnyDesk</b> or <b>TeamViewer</b>, or is watching your screen right now — <b>hang up</b>. Demo Bank will never ask you to share your screen or move money to a “safe account”.</div>
+    </div>`;
 }
 
 // ---------- screens ----------
@@ -277,6 +312,8 @@ function outcomeStepUp(amount) {
 (async () => {
   try { cfg = { ...cfg, ...(await fetch('/demo/config').then((r) => r.json())) }; } catch { /* defaults */ }
   FraudSdk.init({ tenantId: cfg.tenantId, siteKey: cfg.siteKey, collectorUrl: cfg.collectorUrl, flushIntervalMs: 2000 });
+  FraudSdk.onLocalRisk(renderBanner);
+  $('simShare').onchange = (e) => FraudSdk.reportRemoteAccess(e.target.checked);
   render();
 })();
 </script>
