@@ -283,6 +283,42 @@ const scenarios = {
         { txnRef: 'TXN-APPSCAM', amount: 90000, currency: 'CZK', payeeIsNew: true }));
   },
 
+  /** Expo / React Native SDK wire: the exact events @veratools/fraud-sdk-expo
+   *  emits — RN device fingerprint, native screen-share detection
+   *  (PASSIVE_REMOTE_ACCESS from the VirtualDisplay check), PanResponder touch,
+   *  then a transfer to a new payee from a fresh install. Proves an RN session
+   *  scores through the existing mobile signals with NO server changes. */
+  async rn() {
+    const u = newUser();
+    await buildHistory(u, [30, 14, 2], [4000, 5000, 4500]);   // user history on the trusted phone
+    const liveInstall = crypto.randomUUID();                  // the live session is a new device
+    const t0 = Date.now();
+    const s = crypto.randomUUID();
+    const ra = { screenShareLikely: true, accessibilitySuspect: false,
+                 extraDisplays: 1, accessibilityMatches: [] };
+    await sendBatch(liveInstall, [
+      { type: 'PASSIVE_DEVICE_FINGERPRINT', sessionId: s, installId: liveInstall, ts: t0,
+        payload: { manufacturer: 'Google', model: 'Pixel 7', osName: 'Android', osVersion: '14',
+                   platform: 'android', platformVersion: '34', isPhysical: true } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s, installId: liveInstall, userRef: u.ref,
+        ts: t0 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      { type: 'PASSIVE_REMOTE_ACCESS', sessionId: s, installId: liveInstall, userRef: u.ref,
+        ts: t0 + 30000, payload: ra },
+      { type: 'PASSIVE_TOUCH_STROKES', sessionId: s, installId: liveInstall, userRef: u.ref,
+        ts: t0 + 45000, payload: { strokes: strokes(10, u.dur, u.gap) } },
+      { type: 'BIZ_TXN_INITIATED', sessionId: s, installId: liveInstall, userRef: u.ref,
+        ts: t0 + 60000, callSignals: noCall, remoteAccess: ra,
+        payload: { amountBucket: 'HIGH', currency: 'CZK', payeeIsNew: true, channel: 'BANK_TRANSFER' } },
+    ]);
+    const got = await sendScore(mintToken(s, liveInstall, u.ref),
+      { txnRef: 'TXN-RN', amount: 90000, currency: 'CZK', payeeIsNew: true });
+    report('rn', { decision: 'HOLD', threatType: 'Account Takeover' }, got);
+    if (!(got.signals || []).some((sg) => sg.code === 'REMOTE_ACCESS')) {
+      console.log('  ✗ expected a REMOTE_ACCESS signal from the RN screen-share event');
+      process.exitCode = 1;
+    }
+  },
+
   /** Coached APP scam: active VoIP call, hesitation, new payee, 50x amount. */
   async coached() {
     const u = newUser();

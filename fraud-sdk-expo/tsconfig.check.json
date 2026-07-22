@@ -1,0 +1,10 @@
+{
+  "//": "Local typecheck only. The real app has react-native + expo-* installed; here we typecheck the SDK's own logic against minimal ambient shims (see typecheck/shims.d.ts). DOM lib supplies the ambient globals (fetch, setInterval) RN provides at runtime.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["ES2021", "DOM"],
+    "types": []
+  },
+  "include": ["src", "typecheck/shims.d.ts"]
+}
