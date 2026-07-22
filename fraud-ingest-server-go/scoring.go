@@ -267,6 +267,38 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 	// --- payee & amount --------------------------------------------------
 	if txn.PayeeIsNew {
 		add("NEW_PAYEE", "First-time payee", 15, "asserted by tenant backend")
+
+		// APP-scam tell: the payee was created moments ago, in this very
+		// session, and is being paid straight away — the "add payee, send
+		// everything" pattern of a live coaching call. A legitimate new payee
+		// is usually added, then paid days later.
+		var payeeAddedAt, txnAt time.Time
+		for _, e := range events {
+			switch e.Type {
+			case "BIZ_PAYEE_ADDED":
+				if e.Ts.After(payeeAddedAt) {
+					payeeAddedAt = e.Ts
+				}
+			case "BIZ_TXN_INITIATED":
+				if e.Ts.After(txnAt) {
+					txnAt = e.Ts
+				}
+			}
+		}
+		if txnAt.IsZero() {
+			txnAt = time.Now()
+		}
+		if !payeeAddedAt.IsZero() && !txnAt.Before(payeeAddedAt) {
+			gap := txnAt.Sub(payeeAddedAt)
+			if gap <= 30*time.Minute {
+				when := "seconds"
+				if gap >= time.Minute {
+					when = fmt.Sprintf("%d min", int(gap.Minutes()))
+				}
+				add("RUSHED_NEW_PAYEE", "New payee paid immediately after adding", 20,
+					"payee added "+when+" before transfer")
+			}
+		}
 	}
 	hist := []float64{}
 	for _, a := range ctx.AmountHistory {
@@ -628,7 +660,7 @@ func finish(signals []Signal, ctx *ScoringCtx) ScoreResult {
 	}
 	threat := ""
 	switch {
-	case has("ACTIVE_CALL") &&
+	case (has("ACTIVE_CALL") || has("RUSHED_NEW_PAYEE")) &&
 		(has("NEW_PAYEE") || has("AMOUNT_ABOVE_PROFILE") || has("HIGH_AMOUNT")):
 		threat = "APP Scam"
 	case ctx.UserRef != "" &&

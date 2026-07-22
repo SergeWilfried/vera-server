@@ -260,6 +260,29 @@ const scenarios = {
         { txnRef: 'TXN-CLEAN', amount: 5200, currency: 'CZK', payeeIsNew: false }));
   },
 
+  /** APP scam on the customer's OWN, trusted device: they add a payee and pay
+   *  it seconds later (live coaching), no active call. RUSHED_NEW_PAYEE is the
+   *  differentiator, so an "APP Scam" verdict with no ACTIVE_CALL proves it
+   *  fired. Trusted device → STEP_UP, not HOLD (the realistic APP-scam band). */
+  async appscam() {
+    const u = newUser();
+    await buildHistory(u, [30, 14, 2], [4000, 5000, 4500]);
+    const t0 = Date.now();
+    const s = crypto.randomUUID();
+    await sendBatch(u.install, [
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s, installId: u.install, userRef: u.ref,
+        ts: t0 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      { type: 'BIZ_PAYEE_ADDED', sessionId: s, installId: u.install, userRef: u.ref,
+        ts: t0 + 60000, payload: { payeeRef: 'mule-01', channel: 'BANK' } },
+      { type: 'BIZ_TXN_INITIATED', sessionId: s, installId: u.install, userRef: u.ref,
+        ts: t0 + 90000, callSignals: noCall,
+        payload: { amountBucket: 'HIGH', currency: 'CZK', payeeIsNew: true, channel: 'BANK_TRANSFER' } },
+    ]);
+    report('appscam', { decision: 'STEP_UP', threatType: 'APP Scam' },
+      await sendScore(mintToken(s, u.install, u.ref),
+        { txnRef: 'TXN-APPSCAM', amount: 90000, currency: 'CZK', payeeIsNew: true }));
+  },
+
   /** Coached APP scam: active VoIP call, hesitation, new payee, 50x amount. */
   async coached() {
     const u = newUser();
