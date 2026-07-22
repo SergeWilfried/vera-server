@@ -1,0 +1,28 @@
+{
+  "name": "demo-bank-expo",
+  "version": "1.0.0",
+  "description": "Expo Demo Bank — showcases @veratools/fraud-sdk-expo end to end.",
+  "main": "index.ts",
+  "private": true,
+  "scripts": {
+    "start": "expo start",
+    "ios": "expo start --ios",
+    "android": "expo start --android"
+  },
+  "dependencies": {
+    "expo": "~54.0.0",
+    "expo-constants": "~18.0.13",
+    "expo-crypto": "~15.0.9",
+    "expo-device": "~8.0.10",
+    "expo-secure-store": "~15.0.8",
+    "expo-status-bar": "~3.0.9",
+    "react": "19.1.0",
+    "react-native": "0.81.4"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.0",
+    "@types/react": "~19.1.0",
+    "typescript": "~5.9.2"
+  }
+}
+

@@ -47,6 +47,7 @@ type remoteAccessPayload struct {
 	AccessibilitySuspect bool     `json:"accessibilitySuspect"`
 	ExtraDisplays        int      `json:"extraDisplays"`
 	AccessibilityMatches []string `json:"accessibilityMatches"`
+	ScreenRecording      bool     `json:"screenRecording"`
 }
 
 type webFingerprintPayload struct {
@@ -434,7 +435,14 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 		}
 		if ra, ok := parsePayload[remoteAccessPayload](e.Payload); ok {
 			if ra.ScreenShareLikely {
-				raEvidence = fmt.Sprintf("screen sharing active (%d extra display(s))", ra.ExtraDisplays)
+				switch {
+				case ra.ExtraDisplays > 0:
+					raEvidence = fmt.Sprintf("screen sharing active (%d extra display(s))", ra.ExtraDisplays)
+				case ra.ScreenRecording:
+					raEvidence = "screen recording active"
+				default:
+					raEvidence = "screen sharing likely"
+				}
 				break
 			}
 			if ra.AccessibilitySuspect {

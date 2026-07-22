@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "Demo Bank",
+    "slug": "demo-bank-expo",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": { "backgroundColor": "#0a5bd3" },
+    "assetBundlePatterns": ["**/*"],
+    "ios": { "bundleIdentifier": "com.veratools.demobank", "supportsTablet": true },
+    "android": { "package": "com.veratools.demobank" }
+  }
+}

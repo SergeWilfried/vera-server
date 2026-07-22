@@ -14,6 +14,8 @@ export interface RemoteAccessStatus {
   accessibilitySuspect: boolean;
   extraDisplays: number;
   accessibilityMatches: string[];
+  /** Android 15+ on-device screen recording (folded into screenShareLikely). */
+  screenRecording?: boolean;
 }
 
 interface NativeRemoteAccess {

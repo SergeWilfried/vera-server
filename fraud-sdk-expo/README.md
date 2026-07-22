@@ -60,8 +60,11 @@ await fetch('/pay', { method: 'POST', body: JSON.stringify({ token, amount }) })
 
 ## Screen-share / anti-scam banner
 
-On Android the bundled native module watches for the *effect* of remote control —
-an extra `VirtualDisplay` (AnyDesk/TeamViewer/MediaProjection screen-share) or a
+On Android the bundled native module watches for the *effect* of remote control /
+capture — an extra `VirtualDisplay` (AnyDesk/TeamViewer/MediaProjection
+screen-share, casting), the **Android 15+ screen-recording callback** (catches
+the on-device recorder, which adds no extra display; needs the install-time
+`DETECT_SCREEN_RECORDING` permission, declared in the module manifest), or a
 remote-control accessibility service. When it flips, the SDK does two things:
 
 - **immediately, locally** — raises `onLocalRisk({ level:'warn',
@@ -90,7 +93,7 @@ FraudSdk.reportRemoteAccess(true); // → local banner + PASSIVE_REMOTE_ACCESS
 | Device fingerprint / known device | `expo-device` + install id | `PASSIVE_DEVICE_FINGERPRINT` |
 | Touch dynamics (duration, path, straightness) | `PanResponder` | `PASSIVE_TOUCH_STROKES` |
 | Keystroke timing + paste heuristic | `TextInput` | `PASSIVE_KEYSTROKES` |
-| Screen-share / remote-control | native module | `PASSIVE_REMOTE_ACCESS` |
+| Screen-share / recording / remote-control | native module (Android) | `PASSIVE_REMOTE_ACCESS` |
 | Login / payee / transfer / step-up | your calls | `BIZ_*` |
 
 ## Privacy

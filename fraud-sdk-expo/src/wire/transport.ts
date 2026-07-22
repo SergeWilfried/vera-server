@@ -3,7 +3,7 @@
 // injected id generator, so it carries no react-native / expo import and stays
 // unit-testable in plain Node. Background flush is wired by index via AppState.
 
-import type { SdkConfig, SdkEvent } from '../types.js';
+import type { SdkConfig, SdkEvent } from '../types';
 
 type TransportCfg = Required<Pick<SdkConfig, 'tenantId' | 'siteKey' | 'collectorUrl'>> &
   Pick<SdkConfig, 'sdk'> & { flushIntervalMs: number };

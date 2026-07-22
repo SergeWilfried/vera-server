@@ -5,7 +5,7 @@
 // holds no HMAC key; auth is the public site key).
 
 import * as SecureStore from 'expo-secure-store';
-import { newId } from './crypto.js';
+import { newId } from './crypto';
 
 const INSTALL_KEY = 'vw_fraud_install';
 

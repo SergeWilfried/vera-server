@@ -3,7 +3,7 @@
 // notified immediately whenever that state flips — no server round-trip, so the
 // host app can raise a "someone may be watching your screen" banner in-place.
 
-import type { LocalRisk } from '../types.js';
+import type { LocalRisk } from '../types';
 
 export class RiskTracker {
   private remoteActive = false;

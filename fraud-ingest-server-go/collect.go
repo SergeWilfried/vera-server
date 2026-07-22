@@ -46,7 +46,13 @@ func (s *Server) authSite(r *http.Request) (string, bool) {
 	if !ok || siteKey == "" || t.SiteKey != siteKey {
 		return "", false
 	}
-	// Origin must be on the tenant's allowlist (defends the public key).
+	// Native apps (mobile SDKs) send no Origin — there is no browser and thus no
+	// cross-site risk, so the site key alone authenticates. Browser requests
+	// (Origin present) must still match the tenant's allowlist, which is what
+	// defends the public key against other websites.
+	if origin == "" {
+		return tenantID, true
+	}
 	allowed := false
 	for _, o := range t.AllowedOrigins {
 		if strings.TrimSpace(o) == origin {

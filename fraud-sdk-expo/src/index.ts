@@ -14,20 +14,20 @@
 // keystroke content; hash identifiers via FraudSdk.hash() before setUser.
 
 import { AppState, type AppStateStatus } from 'react-native';
-import type { SdkConfig, SdkEvent, LocalRisk } from './types.js';
-import { Transport } from './wire/transport.js';
-import { RiskTracker } from './core/risk.js';
-import { newId, hash as sha256 } from './platform/crypto.js';
-import { getInstallId } from './platform/storage.js';
-import { fingerprint } from './platform/device.js';
-import { keystrokeProps, type KeystrokeProps } from './collectors/keystroke.js';
-import { createTouchCapture, type TouchCapture } from './collectors/touch.js';
+import type { SdkConfig, SdkEvent, LocalRisk } from './types';
+import { Transport } from './wire/transport';
+import { RiskTracker } from './core/risk';
+import { newId, hash as sha256 } from './platform/crypto';
+import { getInstallId } from './platform/storage';
+import { fingerprint } from './platform/device';
+import { keystrokeProps, type KeystrokeProps } from './collectors/keystroke';
+import { createTouchCapture, type TouchCapture } from './collectors/touch';
 import {
   createRemoteAccessWatch,
   type RemoteAccessStatus,
   type RemoteAccessWatch,
-} from './collectors/remoteAccess.js';
-import { BusinessEvent } from './events.js';
+} from './collectors/remoteAccess';
+import { BusinessEvent } from './events';
 
 interface State {
   cfg: Required<SdkConfig>;
@@ -186,5 +186,5 @@ export const FraudSdk = {
 };
 
 export { BusinessEvent };
-export type { SdkConfig, SdkEvent, LocalRisk } from './types.js';
-export type { RemoteAccessStatus } from './collectors/remoteAccess.js';
+export type { SdkConfig, SdkEvent, LocalRisk } from './types';
+export type { RemoteAccessStatus } from './collectors/remoteAccess';
