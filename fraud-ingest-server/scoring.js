@@ -150,6 +150,26 @@ function score(ctx, txn) {
     }
   }
 
+  // --- transaction velocity (structuring / session drain) ---------------
+  // Many transfers in a short window — a drain split into small,
+  // individually-benign amounts to stay under the per-transaction cutoff,
+  // or an account-takeover cash-out. Escalates with the count so a runaway
+  // drain crosses STEP_UP then HOLD on its own, even to a known payee.
+  {
+    const VEL_WINDOW = 10 * 60000;
+    const txnTimes = events
+      .filter((e) => e.type === 'BIZ_TXN_INITIATED')
+      .map((e) => new Date(e.ts).getTime());
+    if (txnTimes.length) {
+      const last = Math.max(...txnTimes);
+      const count = txnTimes.filter((t) => t >= last - VEL_WINDOW).length;
+      if (count >= 4) {
+        add('TXN_VELOCITY', 'Rapid repeated transfers (velocity)', 20 + 15 * (count - 4),
+            `${count} transfers within 10 min`);
+      }
+    }
+  }
+
   // --- keystroke dynamics ----------------------------------------------
   let hesitation = null, paste = null;
   for (const e of events) {
@@ -322,7 +342,7 @@ function score(ctx, txn) {
   } else if (ctx.userRef &&
       (has('NEW_DEVICE_FOR_USER') || has('DEVICE_INTEGRITY') ||
        has('SIDELOADED_APP') || has('DEBUG_BUILD') || has('STEP_UP_FAILED') ||
-       has('ACCESSIBILITY_SERVICES') || has('TOUCH_ANOMALY') ||
+       has('TXN_VELOCITY') || has('ACCESSIBILITY_SERVICES') || has('TOUCH_ANOMALY') ||
        has('KEYSTROKE_ANOMALY'))) {
     threatType = 'Account Takeover';
   } else if (has('DORMANT_REACTIVATED') || has('RAPID_IN_OUT')) {
@@ -358,6 +378,12 @@ function scoreAccountFlow(flow) {
   if (flow.fanOut24 >= 3) {
     add('FAN_OUT', 'Outbound split across many counterparties', 20,
         `${flow.fanOut24} distinct counterparties in 24h`);
+  }
+  // Drain by many outbound transfers — catches a same-payee structuring
+  // drain that FAN_OUT (distinct counterparties) would miss.
+  if (flow.outCount24 >= 10) {
+    add('OUT_BURST', 'Burst of outbound transactions (account drain)', 30,
+        `${flow.outCount24} outbound transactions in 24h`);
   }
   if (flow.priorActivity90d === 0 && flow.in72 > 0) {
     add('QUIET_ACCOUNT', 'No account activity in the prior 90 days', 25,

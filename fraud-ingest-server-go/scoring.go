@@ -457,6 +457,37 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 			fmt.Sprintf("%.0f %s (>= %.0f)", txn.Amount, ccy, cutoff))
 	}
 
+	// --- transaction velocity (structuring / session drain) -------------
+	// Many transfers in a short window — a drain split into small,
+	// individually-benign amounts to stay under the per-transaction cutoff,
+	// or an account-takeover cash-out. Escalates with the count so a runaway
+	// drain crosses STEP_UP then HOLD on its own, even to a known payee.
+	{
+		velWindow := 10 * time.Minute
+		var lastTxn time.Time
+		var txnTimes []time.Time
+		for _, e := range events {
+			if e.Type == "BIZ_TXN_INITIATED" {
+				txnTimes = append(txnTimes, e.Ts)
+				if e.Ts.After(lastTxn) {
+					lastTxn = e.Ts
+				}
+			}
+		}
+		count := 0
+		if !lastTxn.IsZero() {
+			for _, t := range txnTimes {
+				if !t.Before(lastTxn.Add(-velWindow)) {
+					count++
+				}
+			}
+		}
+		if count >= 4 {
+			add("TXN_VELOCITY", "Rapid repeated transfers (velocity)", 20+15*(count-4),
+				fmt.Sprintf("%d transfers within 10 min", count))
+		}
+	}
+
 	// --- keystroke dynamics ----------------------------------------------
 	hesitationDone, pasteDone := false, false
 	for _, e := range events {
@@ -856,7 +887,7 @@ func finish(signals []Signal, ctx *ScoringCtx) ScoreResult {
 	case ctx.UserRef != "" &&
 		(has("REMOTE_ACCESS") || has("NEW_DEVICE_FOR_USER") || has("DEVICE_INTEGRITY") ||
 			has("SIDELOADED_APP") || has("DEBUG_BUILD") || has("STEP_UP_FAILED") ||
-			has("ACCESSIBILITY_SERVICES") || has("TOUCH_ANOMALY") ||
+			has("TXN_VELOCITY") || has("ACCESSIBILITY_SERVICES") || has("TOUCH_ANOMALY") ||
 			has("KEYSTROKE_ANOMALY") || has("MOUSE_ANOMALY") || has("HEADLESS_BROWSER") ||
 			has("IMPOSSIBLE_TRAVEL") || has("MOCK_LOCATION")):
 		threat = "Account Takeover"
@@ -879,6 +910,7 @@ type AccountFlow struct {
 	In72                  float64
 	LastInAt              *time.Time
 	Out24                 float64
+	OutCount24            int
 	FanOut24              int
 	PriorActivity90d      int
 	FlaggedCounterparties int
@@ -896,6 +928,12 @@ func scoreAccountFlow(f AccountFlow) ScoreResult {
 	if f.FanOut24 >= 3 {
 		add("FAN_OUT", "Outbound split across many counterparties", 20,
 			fmt.Sprintf("%d distinct counterparties in 24h", f.FanOut24))
+	}
+	// Drain by many outbound transfers — catches a same-payee structuring
+	// drain that FAN_OUT (distinct counterparties) would miss.
+	if f.OutCount24 >= 10 {
+		add("OUT_BURST", "Burst of outbound transactions (account drain)", 30,
+			fmt.Sprintf("%d outbound transactions in 24h", f.OutCount24))
 	}
 	if f.PriorActivity90d == 0 && f.In72 > 0 {
 		add("QUIET_ACCOUNT", "No account activity in the prior 90 days", 25,

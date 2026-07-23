@@ -268,6 +268,8 @@ async function getAccountFlow(tenantId, accountRef) {
                   AND ts > now() - interval '72 hours')      AS last_in,
          coalesce(sum(amount) FILTER (WHERE direction='OUT'
                   AND ts > now() - interval '24 hours'), 0)  AS out24,
+         count(*) FILTER (WHERE direction='OUT'
+                  AND ts > now() - interval '24 hours')      AS out_count,
          count(DISTINCT counterparty_ref) FILTER (WHERE direction='OUT'
                   AND ts > now() - interval '24 hours')      AS fan
        FROM bank_txns WHERE tenant_id=$1 AND account_ref=$2`,
@@ -289,7 +291,7 @@ async function getAccountFlow(tenantId, accountRef) {
   ]);
   return {
     in72: Number(flow.in72), lastInAt: flow.last_in,
-    out24: Number(flow.out24), fanOut24: Number(flow.fan),
+    out24: Number(flow.out24), outCount24: Number(flow.out_count), fanOut24: Number(flow.fan),
     priorActivity90d: prior, flaggedCounterparties: flagged,
   };
 }

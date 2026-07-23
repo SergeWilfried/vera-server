@@ -507,10 +507,12 @@ func (s *Server) getAccountFlow(ctx context.Context, tenantID, accountRef string
 		        max(ts) FILTER (WHERE direction='IN' AND ts > now() - interval '72 hours'),
 		        coalesce(sum(amount) FILTER (WHERE direction='OUT'
 		          AND ts > now() - interval '24 hours'), 0)::float8,
+		        count(*) FILTER (WHERE direction='OUT'
+		          AND ts > now() - interval '24 hours')::int,
 		        count(DISTINCT counterparty_ref) FILTER (WHERE direction='OUT'
 		          AND ts > now() - interval '24 hours')::int
 		 FROM bank_txns WHERE tenant_id=$1 AND account_ref=$2`,
-		tenantID, accountRef).Scan(&f.In72, &f.LastInAt, &f.Out24, &f.FanOut24); err != nil {
+		tenantID, accountRef).Scan(&f.In72, &f.LastInAt, &f.Out24, &f.OutCount24, &f.FanOut24); err != nil {
 		return f, err
 	}
 	if err := s.pool.QueryRow(ctx,

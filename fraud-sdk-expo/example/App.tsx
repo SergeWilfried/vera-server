@@ -222,7 +222,13 @@ export default function App() {
                 <Text style={styles.presetSub}>{p.sub}</Text>
               </Pressable>
             ))}
-            <Btn label={busy ? 'Checking…' : `Send ${fmt(pick.amount)} FCFA`} onPress={() => pay(pick)} disabled={busy} />
+            {pick.amount > balance && (
+              <Text style={[styles.sub, { color: C.stop, fontWeight: '700' }]}>
+                Insufficient balance — you have {fmt(balance)} FCFA.
+              </Text>
+            )}
+            <Btn label={busy ? 'Checking…' : `Send ${fmt(pick.amount)} FCFA`}
+              onPress={() => pay(pick)} disabled={busy || pick.amount > balance} />
             <Btn label="Cancel" ghost onPress={() => setScreen('dashboard')} />
           </Card>
         )}
