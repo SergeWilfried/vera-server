@@ -305,7 +305,12 @@ func (s *Server) handleScore(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]any{"error": "internal"})
 		return
 	}
-	sc.HighAmountThreshold = s.highAmountThreshold(ctx, payload.Tenant, txn.Currency)
+	rr := s.resolveRisk(ctx, payload.Tenant, txn.Currency)
+	sc.HighAmountThreshold = rr.highAmount
+	sc.VelocityWindowMin = rr.velWindowMin
+	sc.VelocityThreshold = rr.velThreshold
+	sc.VelocityBase = rr.velBase
+	sc.VelocitySlope = rr.velSlope
 	result := scoreSession(sc, txn)
 
 	// Policy bands: 0–54 approve · 55–84 step-up · 85–100 hold for analyst

@@ -81,10 +81,16 @@ type ScoringCtx struct {
 	// default (see highAmountCutoff). The history-based AMOUNT_ABOVE_PROFILE
 	// branch is already currency-safe (relative to the user's own median).
 	HighAmountThreshold  float64
-	HasBankFlow          bool
-	FlowIn72             float64
-	FlowLastInAt         *time.Time
-	FlowFan              int
+	// Per-tenant TXN_VELOCITY tuning, resolved by the handler. Each <=0 means
+	// unset -> fall back to the default (see velocityConfig). window in minutes.
+	VelocityWindowMin int
+	VelocityThreshold int
+	VelocityBase      int
+	VelocitySlope     int
+	HasBankFlow       bool
+	FlowIn72          float64
+	FlowLastInAt      *time.Time
+	FlowFan           int
 }
 
 // defaultHighAmount cutoff, used when no override is configured — a low bar
@@ -97,6 +103,34 @@ func highAmountCutoff(t float64) float64 {
 		return t
 	}
 	return defaultHighAmountCutoff
+}
+
+// velocity defaults: 4+ transfers in a rolling 10-min window fires, weight
+// escalates 20 + 15 per extra transfer.
+const (
+	defaultVelWindowMin = 10
+	defaultVelThreshold = 4
+	defaultVelBase      = 20
+	defaultVelSlope     = 15
+)
+
+// velocityConfig resolves the four TXN_VELOCITY knobs, applying the default
+// for any unset (<=0) field.
+func velocityConfig(ctx *ScoringCtx) (windowMin, threshold, base, slope int) {
+	windowMin, threshold, base, slope = ctx.VelocityWindowMin, ctx.VelocityThreshold, ctx.VelocityBase, ctx.VelocitySlope
+	if windowMin <= 0 {
+		windowMin = defaultVelWindowMin
+	}
+	if threshold <= 0 {
+		threshold = defaultVelThreshold
+	}
+	if base <= 0 {
+		base = defaultVelBase
+	}
+	if slope <= 0 {
+		slope = defaultVelSlope
+	}
+	return
 }
 
 type ScoreTxn struct {
@@ -463,7 +497,8 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 	// or an account-takeover cash-out. Escalates with the count so a runaway
 	// drain crosses STEP_UP then HOLD on its own, even to a known payee.
 	{
-		velWindow := 10 * time.Minute
+		windowMin, threshold, base, slope := velocityConfig(ctx)
+		velWindow := time.Duration(windowMin) * time.Minute
 		var lastTxn time.Time
 		var txnTimes []time.Time
 		for _, e := range events {
@@ -482,9 +517,9 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 				}
 			}
 		}
-		if count >= 4 {
-			add("TXN_VELOCITY", "Rapid repeated transfers (velocity)", 20+15*(count-4),
-				fmt.Sprintf("%d transfers within 10 min", count))
+		if count >= threshold {
+			add("TXN_VELOCITY", "Rapid repeated transfers (velocity)", base+slope*(count-threshold),
+				fmt.Sprintf("%d transfers within %d min", count, windowMin))
 		}
 	}
 

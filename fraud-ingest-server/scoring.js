@@ -156,16 +156,20 @@ function score(ctx, txn) {
   // or an account-takeover cash-out. Escalates with the count so a runaway
   // drain crosses STEP_UP then HOLD on its own, even to a known payee.
   {
-    const VEL_WINDOW = 10 * 60000;
+    // Per-tenant tuning; each <=0 falls back to the default.
+    const windowMin = ctx.velocityWindowMin > 0 ? ctx.velocityWindowMin : 10;
+    const threshold = ctx.velocityThreshold > 0 ? ctx.velocityThreshold : 4;
+    const base = ctx.velocityBase > 0 ? ctx.velocityBase : 20;
+    const slope = ctx.velocitySlope > 0 ? ctx.velocitySlope : 15;
     const txnTimes = events
       .filter((e) => e.type === 'BIZ_TXN_INITIATED')
       .map((e) => new Date(e.ts).getTime());
     if (txnTimes.length) {
       const last = Math.max(...txnTimes);
-      const count = txnTimes.filter((t) => t >= last - VEL_WINDOW).length;
-      if (count >= 4) {
-        add('TXN_VELOCITY', 'Rapid repeated transfers (velocity)', 20 + 15 * (count - 4),
-            `${count} transfers within 10 min`);
+      const count = txnTimes.filter((t) => t >= last - windowMin * 60000).length;
+      if (count >= threshold) {
+        add('TXN_VELOCITY', 'Rapid repeated transfers (velocity)', base + slope * (count - threshold),
+            `${count} transfers within ${windowMin} min`);
       }
     }
   }

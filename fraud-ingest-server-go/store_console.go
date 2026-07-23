@@ -908,7 +908,22 @@ func defaultHighAmountAny() map[string]any {
 // else the baked per-currency default, else the global default. Currency
 // codes are matched case-insensitively. Never errors — a missing/garbled
 // override falls back to the defaults so scoring always has a sane cutoff.
-func (s *Server) highAmountThreshold(ctx context.Context, tenantID, currency string) float64 {
+//
+// riskSettings is the resolved per-tenant risk config for one score call:
+// the high-amount cutoff for the txn currency plus the TXN_VELOCITY knobs.
+type riskSettings struct {
+	highAmount                                    float64
+	velWindowMin, velThreshold, velBase, velSlope int
+}
+
+// resolveRisk reads tenant_settings.risk once and resolves both the currency
+// cutoff and the velocity tuning, applying defaults for anything unset.
+func (s *Server) resolveRisk(ctx context.Context, tenantID, currency string) riskSettings {
+	rs := riskSettings{
+		highAmount:   defaultHighAmountCutoff,
+		velWindowMin: defaultVelWindowMin, velThreshold: defaultVelThreshold,
+		velBase: defaultVelBase, velSlope: defaultVelSlope,
+	}
 	table := defaultHighAmount()
 	var raw []byte
 	if err := s.pool.QueryRow(ctx,
@@ -923,16 +938,29 @@ func (s *Server) highAmountThreshold(ctx context.Context, tenantID, currency str
 						}
 					}
 				}
+				if vel, ok := risk["velocity"].(map[string]any); ok {
+					if f, ok := toFloat(vel["windowMin"]); ok && f > 0 {
+						rs.velWindowMin = int(f)
+					}
+					if f, ok := toFloat(vel["threshold"]); ok && f > 0 {
+						rs.velThreshold = int(f)
+					}
+					if f, ok := toFloat(vel["baseWeight"]); ok && f > 0 {
+						rs.velBase = int(f)
+					}
+					if f, ok := toFloat(vel["slope"]); ok && f > 0 {
+						rs.velSlope = int(f)
+					}
+				}
 			}
 		}
 	}
 	if t, ok := table[strings.ToUpper(currency)]; ok {
-		return t
+		rs.highAmount = t
+	} else if t, ok := table["DEFAULT"]; ok {
+		rs.highAmount = t
 	}
-	if t, ok := table["DEFAULT"]; ok {
-		return t
-	}
-	return defaultHighAmountCutoff
+	return rs
 }
 
 func toFloat(v any) (float64, bool) {
@@ -956,6 +984,12 @@ func defaultSettings() map[string]any {
 		},
 		"risk": map[string]any{
 			"highAmount": defaultHighAmountAny(),
+			"velocity": map[string]any{
+				"windowMin":  defaultVelWindowMin,
+				"threshold":  defaultVelThreshold,
+				"baseWeight": defaultVelBase,
+				"slope":      defaultVelSlope,
+			},
 		},
 		"notifications": map[string]any{
 			"digest": true, "webhook": true, "sms": true, "weekly": true,
