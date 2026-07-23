@@ -23,6 +23,9 @@ importers:
       expo-device:
         specifier: ~8.0.10
         version: 8.0.10(expo@54.0.36(@babel/core@7.29.7)(react-native@0.81.4(@babel/core@7.29.7)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3))
+      expo-screen-capture:
+        specifier: ~8.0.9
+        version: 8.0.9(expo@54.0.36(@babel/core@7.29.7)(react-native@0.81.4(@babel/core@7.29.7)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3))(react@19.1.0)
       expo-secure-store:
         specifier: ~15.0.8
         version: 15.0.8(expo@54.0.36(@babel/core@7.29.7)(react-native@0.81.4(@babel/core@7.29.7)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3))
@@ -42,6 +45,9 @@ importers:
       '@types/react':
         specifier: ~19.1.0
         version: 19.1.17
+      babel-preset-expo:
+        specifier: ^54.0.12
+        version: 54.0.12(@babel/core@7.29.7)(@babel/runtime@7.29.7)(expo@54.0.36(@babel/core@7.29.7)(react-native@0.81.4(@babel/core@7.29.7)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3))(react-refresh@0.14.2)
       typescript:
         specifier: ~5.9.2
         version: 5.9.3
@@ -1358,6 +1364,12 @@ packages:
     peerDependencies:
       react: '*'
       react-native: '*'
+
+  expo-screen-capture@8.0.9:
+    resolution: {integrity: sha512-Xu3ZHlqxO2rEa/R5BOSyTBIJzgVA4sxzMf9jz03dSg5X/I9qwD984cSH9dABJY8NYLQmxKYUTN8jTbA9jzgcTw==}
+    peerDependencies:
+      expo: '*'
+      react: '*'
 
   expo-secure-store@15.0.8:
     resolution: {integrity: sha512-lHnzvRajBu4u+P99+0GEMijQMFCOYpWRO4dWsXSuMt77+THPIGjzNvVKrGSl6mMrLsfVaKL8BpwYZLGlgA+zAw==}
@@ -4352,6 +4364,11 @@ snapshots:
       invariant: 2.2.4
       react: 19.1.0
       react-native: 0.81.4(@babel/core@7.29.7)(@types/react@19.1.17)(react@19.1.0)
+
+  expo-screen-capture@8.0.9(expo@54.0.36(@babel/core@7.29.7)(react-native@0.81.4(@babel/core@7.29.7)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3))(react@19.1.0):
+    dependencies:
+      expo: 54.0.36(@babel/core@7.29.7)(react-native@0.81.4(@babel/core@7.29.7)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3)
+      react: 19.1.0
 
   expo-secure-store@15.0.8(expo@54.0.36(@babel/core@7.29.7)(react-native@0.81.4(@babel/core@7.29.7)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3)):
     dependencies:

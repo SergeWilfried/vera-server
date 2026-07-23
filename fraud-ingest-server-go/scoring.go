@@ -503,6 +503,18 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 		break
 	}
 
+	// --- screenshot during the session (coached exfiltration) ------------
+	// Under coaching, victims are told to screenshot an OTP / balance /
+	// transfer confirmation and send it to the "agent". Weak on its own —
+	// low weight, corroborating — but meaningful stacked with a live call.
+	for _, e := range events {
+		if e.Type == "PASSIVE_SCREENSHOT" {
+			add("SCREENSHOT", "Screenshot captured during the session", 10,
+				"screen contents captured")
+			break
+		}
+	}
+
 	// --- touch behavior vs. baseline -------------------------------------
 	curStrokes := []Stroke{}
 	for _, e := range events {

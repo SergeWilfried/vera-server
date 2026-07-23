@@ -33,10 +33,24 @@ declare module 'react-native' {
     ): { remove(): void };
   };
   export const NativeModules: Record<string, unknown>;
+  export interface EmitterSubscription {
+    remove(): void;
+  }
   export class NativeEventEmitter {
     constructor(mod?: unknown);
     addListener(event: string, cb: (payload: unknown) => void): { remove(): void };
   }
+}
+
+declare module 'expo-screen-capture' {
+  import type { EmitterSubscription } from 'react-native';
+  export function addScreenshotListener(listener: () => void): EmitterSubscription;
+  export function preventScreenCaptureAsync(key?: string): Promise<void>;
+  export function allowScreenCaptureAsync(key?: string): Promise<void>;
+}
+
+declare module 'expo' {
+  export function requireOptionalNativeModule<T = unknown>(name: string): T | null;
 }
 
 declare module 'expo-crypto' {

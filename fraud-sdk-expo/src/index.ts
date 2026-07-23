@@ -33,6 +33,11 @@ import {
   type CallKind,
   type CallSignalsWatch,
 } from './collectors/callSignals';
+import {
+  createScreenshotWatch,
+  preventScreenCapture,
+  type ScreenshotWatch,
+} from './collectors/screenCapture';
 import { BusinessEvent } from './events';
 
 interface State {
@@ -46,6 +51,8 @@ interface State {
   touch: TouchCapture;
   watch: RemoteAccessWatch;
   callWatch: CallSignalsWatch;
+  shotWatch: ScreenshotWatch;
+  screenshotCb?: () => void;
   appSub: { remove(): void };
 }
 
@@ -96,6 +103,15 @@ function applyCallTransition(active: boolean, kind: CallKind, durationMs: number
   enqueue('PASSIVE_CALL_STATE', active ? { active, kind } : { active, kind, durationMs });
 }
 
+// A screenshot is a one-shot event, not a persistent state — emit it for
+// scoring but don't put it in the local-risk state machine (which drives the
+// persistent banner). The host app can react via onScreenshot below.
+function onScreenshot(): void {
+  if (!state) return;
+  enqueue('PASSIVE_SCREENSHOT', { at: Date.now() });
+  state.screenshotCb?.();
+}
+
 const sessionApi = {
   setUser(userRef: string): void {
     if (!state) return;
@@ -141,15 +157,24 @@ export const FraudSdk = {
     const touch = createTouchCapture(enqueue);
     const watch = createRemoteAccessWatch(cfg.remoteAccessPollMs, applyRemoteAccess);
     const callWatch = createCallSignalsWatch(cfg.callPollMs, applyCallTransition);
+    const shotWatch = createScreenshotWatch(onScreenshot);
     const appSub = AppState.addEventListener('change', (s: AppStateStatus) => {
       if (s === 'background' || s === 'inactive') void transport.flush();
     });
-    state = { cfg, installId, sessionId: newId(), transport, risk, touch, watch, callWatch, appSub };
+    state = { cfg, installId, sessionId: newId(), transport, risk, touch, watch, callWatch, shotWatch, appSub };
     transport.start();
 
     enqueue('PASSIVE_DEVICE_FINGERPRINT', fingerprint());
-    watch.start();     // no-op (returns false) if there's no native module
-    callWatch.start(); // no-op (returns false) if there's no native module
+    const remoteNative = watch.start();     // false => no native module
+    const callNative = callWatch.start();   // false => no native module
+    const shotNative = shotWatch.start();   // false => expo-screen-capture absent
+    if (__DEV__) {
+      console.log(
+        `[VeraFraudSdk] native watches — remoteAccess: ${remoteNative}, ` +
+        `callSignals: ${callNative}, screenshot: ${shotNative}` +
+        (remoteNative && callNative ? '' : ' (manual report* fallbacks active)'),
+      );
+    }
     void refreshToken();
   },
 
@@ -198,6 +223,22 @@ export const FraudSdk = {
     state.callWatch.report(cs);
   },
 
+  /** Block screen capture — screenshots AND screen recording — while enabled.
+   *  Call {@code preventScreenCapture(true)} when a sensitive screen (transfer,
+   *  OTP, balance) mounts and {@code false} when it unmounts, so a coached
+   *  victim can't screenshot account details to send to a scammer. Safe no-op
+   *  if expo-screen-capture isn't installed. */
+  preventScreenCapture(enable: boolean): Promise<void> {
+    return preventScreenCapture(enable);
+  },
+
+  /** Notified when the user screenshots the app. Fires in addition to the
+   *  PASSIVE_SCREENSHOT event sent to the backend — use it to show a local
+   *  "don't share screenshots of your account" warning. */
+  onScreenshot(cb: () => void): void {
+    if (state) state.screenshotCb = cb;
+  },
+
   /** Force-upload queued events (flushes touch strokes first). Call right before
    *  a risky backend call, e.g. just before your server's /score. */
   async flush(): Promise<void> {
@@ -217,6 +258,7 @@ export const FraudSdk = {
     state.transport.stop();
     state.watch.stop();
     state.callWatch.stop();
+    state.shotWatch.stop();
     state.appSub.remove();
     state = null;
   },

@@ -12,16 +12,16 @@
 // If no native module is present (Expo Go), start() returns false and the app
 // falls back to manual FraudSdk.reportCallState(...) from its own shell.
 
-import { NativeModules } from 'react-native';
+import { requireOptionalNativeModule } from 'expo';
 import type { CallSignals } from '../types';
 
 interface NativeCallSignals {
   getStatus(): Promise<CallSignals>;
 }
 
-const Native = (NativeModules as Record<string, unknown>)['VeraCallSignals'] as
-  | NativeCallSignals
-  | undefined;
+// Expo modules live in Expo's registry, NOT react-native's NativeModules —
+// resolving via NativeModules silently returns undefined in every build.
+const Native = requireOptionalNativeModule<NativeCallSignals>('VeraCallSignals');
 
 export type CallKind = 'GSM' | 'VoIP';
 

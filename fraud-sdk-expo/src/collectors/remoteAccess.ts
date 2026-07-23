@@ -7,7 +7,7 @@
 // If no native module is present (Expo Go, iOS), start() returns false and the
 // app falls back to manual FraudSdk.reportRemoteAccess(...) from its own shell.
 
-import { NativeModules } from 'react-native';
+import { requireOptionalNativeModule } from 'expo';
 
 export interface RemoteAccessStatus {
   screenShareLikely: boolean;
@@ -22,9 +22,9 @@ interface NativeRemoteAccess {
   getStatus(): Promise<RemoteAccessStatus>;
 }
 
-const Native = (NativeModules as Record<string, unknown>)['VeraRemoteAccess'] as
-  | NativeRemoteAccess
-  | undefined;
+// Expo modules live in Expo's registry, NOT react-native's NativeModules —
+// resolving via NativeModules silently returns undefined in every build.
+const Native = requireOptionalNativeModule<NativeRemoteAccess>('VeraRemoteAccess');
 
 export interface RemoteAccessWatch {
   /** Begin polling. Returns false if no native module is available. */

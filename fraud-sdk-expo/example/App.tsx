@@ -15,10 +15,16 @@ import { StatusBar } from 'expo-status-bar';
 import Constants from 'expo-constants';
 import { FraudSdk, BusinessEvent, type LocalRisk } from '@veratools/fraud-sdk-expo';
 
-// Reach the dev machine from the simulator/device via the Metro host IP.
+// Dev default: reach the dev machine from the simulator/device via the Metro
+// host IP. Deployed build: set EXPO_PUBLIC_COLLECTOR_URL (and optionally
+// EXPO_PUBLIC_BANK_BACKEND) at build time — with a collector URL and no bank
+// backend, the app calls /v1/score directly. That is a DEMO-ONLY shortcut so
+// a standalone APK works without deploying server.mjs; a real integration
+// keeps the score call server-to-server behind the bank's backend.
 const HOST = (Constants.expoConfig?.hostUri ?? 'localhost:8081').split(':')[0];
-const COLLECTOR = `http://${HOST}:8080`; // Verawall collector (Go server)
-const BACKEND = `http://${HOST}:8099`;   // Demo Bank backend (server.mjs)
+const COLLECTOR = process.env.EXPO_PUBLIC_COLLECTOR_URL ?? `http://${HOST}:8080`;
+const BACKEND = process.env.EXPO_PUBLIC_BANK_BACKEND ??
+  (process.env.EXPO_PUBLIC_COLLECTOR_URL ? '' : `http://${HOST}:8099`);
 const TENANT = 'wallet-acme';
 const SITE_KEY = 'site_wallet-acme_pub';
 const DEMO_EMAIL = 'olivia@demobank.cz';
@@ -50,15 +56,23 @@ export default function App() {
   const [riskReasons, setRiskReasons] = useState<string[]>([]);
   const [shareSim, setShareSim] = useState(false);
   const [callSim, setCallSim] = useState(false);
+  const [preventShots, setPreventShots] = useState(false);
+  const [shotSeen, setShotSeen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
       await FraudSdk.init({ tenantId: TENANT, siteKey: SITE_KEY, collectorUrl: COLLECTOR, flushIntervalMs: 2000 });
       FraudSdk.onLocalRisk((r: LocalRisk) => setRiskReasons(r.reasons));
+      FraudSdk.onScreenshot(() => setShotSeen(true));
       setReady(true);
     })();
   }, []);
+
+  function togglePreventShots(v: boolean) {
+    setPreventShots(v);
+    void FraudSdk.preventScreenCapture(v);
+  }
 
   const touch = useMemo(() => (ready ? FraudSdk.touch() : { panHandlers: {}, flush: () => {} }), [ready]);
   const pinTrack = useMemo(() => FraudSdk.trackInput('login.pin'), []);
@@ -79,10 +93,21 @@ export default function App() {
       }));
       await FraudSdk.flush();
       const token = await FraudSdk.session().getToken();
-      const res = await fetch(`${BACKEND}/demo/pay`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, amount: p.amount, payeeNew: p.newPayee }),
-      });
+      const res = BACKEND
+        ? await fetch(`${BACKEND}/demo/pay`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token, amount: p.amount, payeeNew: p.newPayee }),
+          })
+        : await fetch(`${COLLECTOR}/v1/score`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              sessionToken: token,
+              transaction: {
+                txnRef: 'DEMO-' + Date.now(), amount: p.amount, currency: 'CZK',
+                payeeIsNew: p.newPayee, channel: 'BANK_TRANSFER',
+              },
+            }),
+          });
       const d: Decision = await res.json();
       setVerdict(d);
       if (d.decision === 'ALLOW') setBalance((b) => b - p.amount);
@@ -204,7 +229,9 @@ export default function App() {
         {screen === 'outcome' && verdict && <Outcome d={verdict} onDone={() => setScreen('dashboard')} onBalance={(amt) => setBalance((b) => b - amt)} />}
 
         <VerawallPanel verdict={verdict} shareSim={shareSim} onToggleShare={toggleShare}
-          callSim={callSim} onToggleCall={toggleCall} />
+          callSim={callSim} onToggleCall={toggleCall}
+          preventShots={preventShots} onTogglePreventShots={togglePreventShots}
+          shotSeen={shotSeen} />
       </ScrollView>
     </View>
   );
@@ -265,9 +292,11 @@ function Outcome({ d, onDone, onBalance }: { d: Decision; onDone: () => void; on
   );
 }
 
-function VerawallPanel({ verdict, shareSim, onToggleShare, callSim, onToggleCall }: {
+function VerawallPanel({ verdict, shareSim, onToggleShare, callSim, onToggleCall,
+  preventShots, onTogglePreventShots, shotSeen }: {
   verdict: Decision | null; shareSim: boolean; onToggleShare: (v: boolean) => void;
   callSim: boolean; onToggleCall: (v: boolean) => void;
+  preventShots: boolean; onTogglePreventShots: (v: boolean) => void; shotSeen: boolean;
 }) {
   const band = verdict?.decision;
   return (
@@ -312,8 +341,19 @@ function VerawallPanel({ verdict, shareSim, onToggleShare, callSim, onToggleCall
           <Text style={styles.ctlLabel}>Simulate active call</Text>
           <Switch value={callSim} onValueChange={onToggleCall} />
         </View>
-        <Text style={styles.hint}>Stand in for the native modules (Expo Go can't run native code; the simulator can't
-          place calls). They call FraudSdk.reportRemoteAccess() / reportCallState().</Text>
+        <View style={styles.ctlRow}>
+          <Text style={styles.ctlLabel}>Prevent screenshots</Text>
+          <Switch value={preventShots} onValueChange={onTogglePreventShots} />
+        </View>
+        <Text style={styles.hint}>Screen-share / call stand in for the native modules (Expo Go can't run native
+          code; the simulator can't place calls). "Prevent screenshots" blocks capture on this screen for real
+          via expo-screen-capture — try screenshotting with it on vs. off.</Text>
+        {shotSeen && (
+          <Text style={[styles.hint, { color: C.stop, fontWeight: '700' }]}>
+            Screenshot detected — PASSIVE_SCREENSHOT sent to Verawall. Under coaching, never share screenshots of
+            your account or codes.
+          </Text>
+        )}
       </View>
     </View>
   );

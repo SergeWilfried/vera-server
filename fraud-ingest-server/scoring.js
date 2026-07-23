@@ -162,6 +162,15 @@ function score(ctx, txn) {
   }
   if (paste) add('PASTE_INPUT', 'Pasted input in monitored field', 10, `field ${paste.field}`);
 
+  // --- screenshot during the session (coached exfiltration) -------------
+  // Under coaching, victims are told to screenshot an OTP / balance /
+  // transfer confirmation and send it to the "agent". Weak on its own — low
+  // weight, corroborating — but meaningful stacked with a live call.
+  if (events.some((e) => e.type === 'PASSIVE_SCREENSHOT')) {
+    add('SCREENSHOT', 'Screenshot captured during the session', 10,
+        'screen contents captured');
+  }
+
   // --- device familiarity ----------------------------------------------
   if (!ctx.userRef) {
     add('NO_USER_BOUND', 'Session not bound to a known user', 20, 'token has no userRef');

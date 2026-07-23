@@ -2,11 +2,30 @@
 
 Behavioral-fraud SDK for **React Native / Expo**. Captures touch & keystroke
 dynamics, a device fingerprint, **screen-share / remote-access** (AnyDesk,
-TeamViewer, screen recording), and **in-call state** (the coached-scam signal:
-active GSM/VoIP call while transacting, hang-up-then-transfer transitions),
-and hands the bank's backend a session token to score. It emits the **same
-mobile wire as the Android SDK**, so the collector and scoring engine treat an
-RN session identically — no server changes.
+TeamViewer, screen recording), **in-call state** (the coached-scam signal:
+active GSM/VoIP call while transacting, hang-up-then-transfer transitions), and
+**screenshot detection + capture prevention**, and hands the bank's backend a
+session token to score. It emits the **same mobile wire as the Android SDK**,
+so the collector and scoring engine treat an RN session identically — no
+server changes.
+
+## Screenshot detection & prevention
+
+Via `expo-screen-capture` (cross-platform, works in Expo Go — no native module):
+
+```tsx
+// Block screenshots + screen recording on a sensitive screen:
+useEffect(() => {
+  FraudSdk.preventScreenCapture(true);      // on mount
+  return () => { FraudSdk.preventScreenCapture(false); }; // on unmount
+}, []);
+
+// React to a screenshot (also sent to the backend as PASSIVE_SCREENSHOT):
+FraudSdk.onScreenshot(() => showWarning('Never share screenshots of your codes'));
+```
+
+A screenshot during a session scores as `SCREENSHOT` (coached exfiltration:
+victims are told to screenshot an OTP / balance and send it to the "agent").
 
 It's the mobile sibling of [`@veratools/fraud-sdk-web`](../fraud-sdk-web): same
 wire, same tenant, same console; different (native) collectors.
