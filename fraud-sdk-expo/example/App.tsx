@@ -31,9 +31,9 @@ const DEMO_EMAIL = 'olivia@demobank.cz';
 
 type Preset = { id: string; title: string; sub: string; amount: number; newPayee: boolean; rushed?: boolean };
 const PRESETS: Preset[] = [
-  { id: 'rent', title: 'Pay landlord', sub: '8,000 CZK · known payee', amount: 8000, newPayee: false },
-  { id: 'attack', title: 'New payee — large', sub: '150,000 CZK · first-time payee', amount: 150000, newPayee: true },
-  { id: 'coached', title: 'Coached transfer', sub: '90,000 CZK · payee added just now', amount: 90000, newPayee: true, rushed: true },
+  { id: 'rent', title: 'Pay landlord', sub: '8,000 FCFA · known payee', amount: 8000, newPayee: false },
+  { id: 'attack', title: 'New payee — large', sub: '150,000 FCFA · first-time payee', amount: 150000, newPayee: true },
+  { id: 'coached', title: 'Coached transfer', sub: '90,000 FCFA · payee added just now', amount: 90000, newPayee: true, rushed: true },
 ];
 
 type Decision = {
@@ -90,7 +90,7 @@ export default function App() {
     try {
       if (p.rushed) FraudSdk.session().event(BusinessEvent.payeeAdded('demo-payee-' + Date.now()));
       FraudSdk.session().event(BusinessEvent.txnInitiated({
-        amountBucket: p.amount >= 50000 ? 'HIGH' : 'MID', currency: 'CZK', payeeIsNew: p.newPayee, channel: 'BANK_TRANSFER',
+        amountBucket: p.amount >= 50000 ? 'HIGH' : 'MID', currency: 'XOF', payeeIsNew: p.newPayee, channel: 'BANK_TRANSFER',
       }));
       await FraudSdk.flush();
       const token = await FraudSdk.session().getToken();
@@ -104,7 +104,7 @@ export default function App() {
             body: JSON.stringify({
               sessionToken: token,
               transaction: {
-                txnRef: 'DEMO-' + Date.now(), amount: p.amount, currency: 'CZK',
+                txnRef: 'DEMO-' + Date.now(), amount: p.amount, currency: 'XOF',
                 payeeIsNew: p.newPayee, channel: 'BANK_TRANSFER',
               },
             }),
@@ -200,7 +200,7 @@ export default function App() {
           <>
             <Card>
               <Text style={styles.sub}>Current account · CZ89 •• 4412</Text>
-              <Text style={styles.balance}>{fmt(balance)} <Text style={styles.balanceCcy}>CZK</Text></Text>
+              <Text style={styles.balance}>{fmt(balance)} <Text style={styles.balanceCcy}>FCFA</Text></Text>
               <Btn label="New transfer" onPress={() => { FraudSdk.session().screenView('transfer'); setScreen('transfer'); }} />
             </Card>
             <Card>
@@ -222,12 +222,12 @@ export default function App() {
                 <Text style={styles.presetSub}>{p.sub}</Text>
               </Pressable>
             ))}
-            <Btn label={busy ? 'Checking…' : `Send ${fmt(pick.amount)} CZK`} onPress={() => pay(pick)} disabled={busy} />
+            <Btn label={busy ? 'Checking…' : `Send ${fmt(pick.amount)} FCFA`} onPress={() => pay(pick)} disabled={busy} />
             <Btn label="Cancel" ghost onPress={() => setScreen('dashboard')} />
           </Card>
         )}
 
-        {screen === 'outcome' && verdict && <Outcome d={verdict} onDone={() => setScreen('dashboard')} onBalance={(amt) => setBalance((b) => b - amt)} />}
+        {screen === 'outcome' && verdict && <Outcome d={verdict} amount={pick.amount} onDone={() => setScreen('dashboard')} onBalance={(amt) => setBalance((b) => b - amt)} />}
 
         <VerawallPanel verdict={verdict} shareSim={shareSim} onToggleShare={toggleShare}
           callSim={callSim} onToggleCall={toggleCall}
@@ -238,7 +238,7 @@ export default function App() {
   );
 }
 
-function Outcome({ d, onDone, onBalance }: { d: Decision; onDone: () => void; onBalance: (n: number) => void }) {
+function Outcome({ d, amount, onDone, onBalance }: { d: Decision; amount: number; onDone: () => void; onBalance: (n: number) => void }) {
   const [otp, setOtp] = useState('');
   const [done, setDone] = useState<null | string>(null);
   if (done) {
@@ -277,7 +277,7 @@ function Outcome({ d, onDone, onBalance }: { d: Decision; onDone: () => void; on
           </Text>
           <Btn label="Cancel — this doesn't feel right" onPress={onDone} />
           <Btn label="No one told me to do this — continue" ghost
-            onPress={() => setDone('Payment sent after scam-warning acknowledgement.')} />
+            onPress={() => { onBalance(amount); setDone('Payment sent after scam-warning acknowledgement.'); }} />
         </Card>
       );
     }
@@ -287,7 +287,7 @@ function Outcome({ d, onDone, onBalance }: { d: Decision; onDone: () => void; on
         <Text style={styles.h2}>Extra verification needed</Text>
         <Text style={styles.sub}>This transfer looks unusual — enter a one-time code.</Text>
         <TextInput style={[styles.input, styles.otp]} value={otp} onChangeText={setOtp} placeholder="••••••" keyboardType="number-pad" maxLength={6} />
-        <Btn label="Verify & send" onPress={() => setDone('Verified — the payment is on its way.')} />
+        <Btn label="Verify & send" onPress={() => { onBalance(amount); setDone('Verified — the payment is on its way.'); }} />
         <Btn label="Back to account" ghost onPress={onDone} />
       </Card>
     );

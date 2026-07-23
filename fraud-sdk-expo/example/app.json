@@ -5,9 +5,20 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "splash": { "backgroundColor": "#0a5bd3" },
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0a5bd3"
+    },
     "assetBundlePatterns": ["**/*"],
     "ios": { "bundleIdentifier": "com.veratools.demobank", "supportsTablet": true },
-    "android": { "package": "com.veratools.demobank" }
+    "android": {
+      "package": "com.veratools.demobank",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0a5bd3"
+      }
+    }
   }
 }
