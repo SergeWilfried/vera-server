@@ -47,14 +47,15 @@ export default function App() {
   const [pin, setPin] = useState('481920');
   const [pick, setPick] = useState<Preset>(PRESETS[0]);
   const [verdict, setVerdict] = useState<Decision | null>(null);
-  const [banner, setBanner] = useState(false);
+  const [riskReasons, setRiskReasons] = useState<string[]>([]);
   const [shareSim, setShareSim] = useState(false);
+  const [callSim, setCallSim] = useState(false);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
       await FraudSdk.init({ tenantId: TENANT, siteKey: SITE_KEY, collectorUrl: COLLECTOR, flushIntervalMs: 2000 });
-      FraudSdk.onLocalRisk((r: LocalRisk) => setBanner(r.reasons.includes('SCREEN_SHARE')));
+      FraudSdk.onLocalRisk((r: LocalRisk) => setRiskReasons(r.reasons));
       setReady(true);
     })();
   }, []);
@@ -99,6 +100,11 @@ export default function App() {
     FraudSdk.reportRemoteAccess(v);
   }
 
+  function toggleCall(v: boolean) {
+    setCallSim(v);
+    FraudSdk.reportCallState(v, 'VoIP');
+  }
+
   if (!ready) {
     return (
       <View style={[styles.app, styles.center]}>
@@ -118,7 +124,7 @@ export default function App() {
           {screen !== 'login' && <Text style={styles.who}>{DEMO_EMAIL}</Text>}
         </View>
 
-        {banner && (
+        {riskReasons.includes('SCREEN_SHARE') && (
           <View style={styles.scam}>
             <Text style={styles.scamIcon}>🛡️</Text>
             <View style={{ flex: 1 }}>
@@ -127,6 +133,18 @@ export default function App() {
                 If someone phoned you and asked to install an app like AnyDesk or TeamViewer, or is watching your
                 screen right now — hang up. Demo Bank will never ask you to share your screen or move money to a
                 “safe account”.
+              </Text>
+            </View>
+          </View>
+        )}
+        {riskReasons.includes('ACTIVE_CALL') && (
+          <View style={styles.scam}>
+            <Text style={styles.scamIcon}>📵</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.scamHead}>You’re on a call right now</Text>
+              <Text style={styles.scamSub}>
+                No one from Demo Bank is on this call. Bank staff never stay on the line while you send money —
+                if the caller is guiding you through a transfer, hang up now.
               </Text>
             </View>
           </View>
@@ -185,7 +203,8 @@ export default function App() {
 
         {screen === 'outcome' && verdict && <Outcome d={verdict} onDone={() => setScreen('dashboard')} onBalance={(amt) => setBalance((b) => b - amt)} />}
 
-        <VerawallPanel verdict={verdict} shareSim={shareSim} onToggleShare={toggleShare} />
+        <VerawallPanel verdict={verdict} shareSim={shareSim} onToggleShare={toggleShare}
+          callSim={callSim} onToggleCall={toggleCall} />
       </ScrollView>
     </View>
   );
@@ -246,7 +265,10 @@ function Outcome({ d, onDone, onBalance }: { d: Decision; onDone: () => void; on
   );
 }
 
-function VerawallPanel({ verdict, shareSim, onToggleShare }: { verdict: Decision | null; shareSim: boolean; onToggleShare: (v: boolean) => void }) {
+function VerawallPanel({ verdict, shareSim, onToggleShare, callSim, onToggleCall }: {
+  verdict: Decision | null; shareSim: boolean; onToggleShare: (v: boolean) => void;
+  callSim: boolean; onToggleCall: (v: boolean) => void;
+}) {
   const band = verdict?.decision;
   return (
     <View style={styles.vw}>
@@ -286,7 +308,12 @@ function VerawallPanel({ verdict, shareSim, onToggleShare }: { verdict: Decision
           <Text style={styles.ctlLabel}>Simulate screen-share</Text>
           <Switch value={shareSim} onValueChange={onToggleShare} />
         </View>
-        <Text style={styles.hint}>Stands in for the native module (Expo Go can't run native code). It calls FraudSdk.reportRemoteAccess().</Text>
+        <View style={styles.ctlRow}>
+          <Text style={styles.ctlLabel}>Simulate active call</Text>
+          <Switch value={callSim} onValueChange={onToggleCall} />
+        </View>
+        <Text style={styles.hint}>Stand in for the native modules (Expo Go can't run native code; the simulator can't
+          place calls). They call FraudSdk.reportRemoteAccess() / reportCallState().</Text>
       </View>
     </View>
   );

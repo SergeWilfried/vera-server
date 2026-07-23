@@ -6,7 +6,8 @@
 //   <View {...FraudSdk.touch().panHandlers}>…</View>          // touch dynamics
 //   FraudSdk.session().event(BusinessEvent.txnInitiated({ amountBucket: 'HIGH' }));
 //   const token = await FraudSdk.session().getToken();         // -> bank backend
-//   FraudSdk.onLocalRisk(r => setBanner(r.reasons.includes('SCREEN_SHARE')));
+//   FraudSdk.onLocalRisk(r => setBanner(r.reasons.includes('SCREEN_SHARE')
+//     || r.reasons.includes('ACTIVE_CALL')));   // anti-scam banner, no server hop
 //
 // Emits the same mobile wire as the Android SDK, so the collector and scoring
 // treat an RN session identically. Public site-key auth (no secret in the app);
@@ -14,7 +15,7 @@
 // keystroke content; hash identifiers via FraudSdk.hash() before setUser.
 
 import { AppState, type AppStateStatus } from 'react-native';
-import type { SdkConfig, SdkEvent, LocalRisk } from './types';
+import type { SdkConfig, SdkEvent, LocalRisk, CallSignals } from './types';
 import { Transport } from './wire/transport';
 import { RiskTracker } from './core/risk';
 import { newId, hash as sha256 } from './platform/crypto';
@@ -27,6 +28,11 @@ import {
   type RemoteAccessStatus,
   type RemoteAccessWatch,
 } from './collectors/remoteAccess';
+import {
+  createCallSignalsWatch,
+  type CallKind,
+  type CallSignalsWatch,
+} from './collectors/callSignals';
 import { BusinessEvent } from './events';
 
 interface State {
@@ -39,6 +45,7 @@ interface State {
   risk: RiskTracker;
   touch: TouchCapture;
   watch: RemoteAccessWatch;
+  callWatch: CallSignalsWatch;
   appSub: { remove(): void };
 }
 
@@ -50,6 +57,12 @@ function enqueue(type: string, payload: unknown): void {
     type, sessionId: state.sessionId, installId: state.installId,
     userRef: state.userRef, ts: Date.now(), payload,
   };
+  // in-call context at the moment of the event (coached-scam signal) — the
+  // same top-level wire field the Android SDK stamps on business events
+  if (type.startsWith('BIZ_')) {
+    const cs = state.callWatch.snapshot();
+    if (cs) ev.callSignals = cs;
+  }
   state.transport.enqueue(ev);
 }
 
@@ -75,6 +88,12 @@ function applyRemoteAccess(active: boolean, status: RemoteAccessStatus): void {
   if (!state) return;
   state.risk.setRemoteAccess(active);
   if (active) enqueue('PASSIVE_REMOTE_ACCESS', status);
+}
+
+function applyCallTransition(active: boolean, kind: CallKind, durationMs: number): void {
+  if (!state) return;
+  state.risk.setActiveCall(active);
+  enqueue('PASSIVE_CALL_STATE', active ? { active, kind } : { active, kind, durationMs });
 }
 
 const sessionApi = {
@@ -114,20 +133,23 @@ export const FraudSdk = {
       sdk: config.sdk ?? 'expo/0.1.0',
       flushIntervalMs: config.flushIntervalMs ?? 5000,
       remoteAccessPollMs: config.remoteAccessPollMs ?? 4000,
+      callPollMs: config.callPollMs ?? 4000,
     };
     const installId = await getInstallId();
     const transport = new Transport(cfg, installId, newId);
     const risk = new RiskTracker();
     const touch = createTouchCapture(enqueue);
     const watch = createRemoteAccessWatch(cfg.remoteAccessPollMs, applyRemoteAccess);
+    const callWatch = createCallSignalsWatch(cfg.callPollMs, applyCallTransition);
     const appSub = AppState.addEventListener('change', (s: AppStateStatus) => {
       if (s === 'background' || s === 'inactive') void transport.flush();
     });
-    state = { cfg, installId, sessionId: newId(), transport, risk, touch, watch, appSub };
+    state = { cfg, installId, sessionId: newId(), transport, risk, touch, watch, callWatch, appSub };
     transport.start();
 
     enqueue('PASSIVE_DEVICE_FINGERPRINT', fingerprint());
-    watch.start(); // no-op (returns false) if there's no native module
+    watch.start();     // no-op (returns false) if there's no native module
+    callWatch.start(); // no-op (returns false) if there's no native module
     void refreshToken();
   },
 
@@ -162,6 +184,20 @@ export const FraudSdk = {
     });
   },
 
+  /** Report call state the app's own shell detected (when the bundled native
+   *  module isn't used, e.g. Expo Go). Raises local risk, stamps callSignals
+   *  on subsequent business events (ACTIVE_CALL) and emits PASSIVE_CALL_STATE
+   *  transitions (RECENT_CALL). */
+  reportCallState(inCall: boolean, kind: 'GSM' | 'VoIP' = 'VoIP'): void {
+    if (!state) return;
+    const cs: CallSignals = {
+      inGsmCall: inCall && kind === 'GSM',
+      inVoipCall: inCall && kind === 'VoIP',
+      speakerOn: false,
+    };
+    state.callWatch.report(cs);
+  },
+
   /** Force-upload queued events (flushes touch strokes first). Call right before
    *  a risky backend call, e.g. just before your server's /score. */
   async flush(): Promise<void> {
@@ -180,11 +216,12 @@ export const FraudSdk = {
     if (!state) return;
     state.transport.stop();
     state.watch.stop();
+    state.callWatch.stop();
     state.appSub.remove();
     state = null;
   },
 };
 
 export { BusinessEvent };
-export type { SdkConfig, SdkEvent, LocalRisk } from './types';
+export type { SdkConfig, SdkEvent, LocalRisk, CallSignals } from './types';
 export type { RemoteAccessStatus } from './collectors/remoteAccess';

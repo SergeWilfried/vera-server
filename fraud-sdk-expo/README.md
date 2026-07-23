@@ -1,10 +1,12 @@
 # @veratools/fraud-sdk-expo
 
 Behavioral-fraud SDK for **React Native / Expo**. Captures touch & keystroke
-dynamics, a device fingerprint, and **screen-share / remote-access** (AnyDesk,
-TeamViewer, screen recording), and hands the bank's backend a session token to
-score. It emits the **same mobile wire as the Android SDK**, so the collector and
-scoring engine treat an RN session identically — no server changes.
+dynamics, a device fingerprint, **screen-share / remote-access** (AnyDesk,
+TeamViewer, screen recording), and **in-call state** (the coached-scam signal:
+active GSM/VoIP call while transacting, hang-up-then-transfer transitions),
+and hands the bank's backend a session token to score. It emits the **same
+mobile wire as the Android SDK**, so the collector and scoring engine treat an
+RN session identically — no server changes.
 
 It's the mobile sibling of [`@veratools/fraud-sdk-web`](../fraud-sdk-web): same
 wire, same tenant, same console; different (native) collectors.
@@ -22,11 +24,13 @@ server-to-server `/v1/score` call.
 npx expo install @veratools/fraud-sdk-expo expo-crypto expo-device expo-secure-store
 ```
 
-The screen-share detection ships as a bundled **Expo native module** (Android).
-It needs a **dev build** — `npx expo prebuild` / EAS — because native code
+The screen-share detection (Android) and in-call detection (Android via
+`AudioManager` — permissionless, sees WhatsApp/Telegram VoIP calls; iOS via
+`CXCallObserver` + `AVAudioSession`) ship as bundled **Expo native modules**.
+They need a **dev build** — `npx expo prebuild` / EAS — because native code
 **can't run in Expo Go**. Everything else (touch, keystroke, business events,
-token) works in Expo Go; without the native module, screen-share is reported
-manually via `reportRemoteAccess()`.
+token) works in Expo Go; without the native modules, screen-share and call
+state are reported manually via `reportRemoteAccess()` / `reportCallState()`.
 
 ## Quick start
 
