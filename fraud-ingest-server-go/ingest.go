@@ -314,6 +314,7 @@ func (s *Server) handleScore(w http.ResponseWriter, r *http.Request) {
 	} else if result.Score >= 55 {
 		decision = "STEP_UP"
 	}
+	intervention := interventionFor(decision, result.ThreatType)
 
 	alertID, err := s.recordDecision(ctx, DecisionRecord{
 		TenantID: payload.Tenant, SessionID: payload.SessionID,
@@ -359,17 +360,22 @@ func (s *Server) handleScore(w http.ResponseWriter, r *http.Request) {
 	if result.ThreatType != "" {
 		threatOut = result.ThreatType
 	}
+	var interventionOut any
+	if intervention != "" {
+		interventionOut = intervention
+	}
 	var userOut any
 	if payload.UserRef != "" {
 		userOut = payload.UserRef
 	}
 	writeJSON(w, 200, map[string]any{
-		"decision":   decision,
-		"riskScore":  result.Score,
-		"reasons":    result.Reasons,
-		"signals":    result.Signals,
-		"threatType": threatOut,
-		"alertId":    alertOut,
+		"decision":     decision,
+		"riskScore":    result.Score,
+		"reasons":      result.Reasons,
+		"signals":      result.Signals,
+		"threatType":   threatOut,
+		"intervention": interventionOut,
+		"alertId":      alertOut,
 		"session": map[string]any{
 			"tenantId": payload.Tenant, "sessionId": payload.SessionID,
 			"installId": payload.InstallID, "userRef": userOut,

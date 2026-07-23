@@ -236,6 +236,10 @@ type callStatePayload struct {
 	DurationMs int64  `json:"durationMs"`
 }
 
+type stepUpPayload struct {
+	Outcome string `json:"outcome"`
+}
+
 type keystrokePayload struct {
 	FieldID string      `json:"fieldId"`
 	Keys    []KeyTiming `json:"keys"`
@@ -352,6 +356,30 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 					ev+" ended "+when+" before transfer")
 			}
 		}
+	}
+
+	// --- step-up outcome (failed challenge escalates) --------------------
+	// The bank performs the step-up (OTP/PIN/biometric/push) and reports the
+	// result via BIZ_STEP_UP_RESULT. A failed challenge on an already-scored
+	// session is a strong escalation — canonical for ATO, where an imposter
+	// fails the owner's credential. Take the LAST result: a user who retries
+	// and passes shouldn't be penalized for an earlier miss.
+	var lastStepUp string
+	var lastStepUpAt time.Time
+	for _, e := range events {
+		if e.Type != "BIZ_STEP_UP_RESULT" {
+			continue
+		}
+		if p, ok := parsePayload[stepUpPayload](e.Payload); ok && !e.Ts.Before(lastStepUpAt) {
+			lastStepUpAt = e.Ts
+			lastStepUp = strings.ToUpper(p.Outcome)
+		}
+	}
+	switch lastStepUp {
+	case "FAIL", "FAILURE", "LOCKED":
+		add("STEP_UP_FAILED", "Step-up challenge failed", 35, "outcome "+lastStepUp)
+	case "ABANDONED":
+		add("STEP_UP_ABANDONED", "Step-up challenge abandoned", 20, "user left the challenge")
 	}
 
 	// --- payee & amount --------------------------------------------------
@@ -754,6 +782,25 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 	return finish(signals, ctx)
 }
 
+// interventionFor recommends HOW the bank should act on a decision — VeraWall
+// decides, the bank enforces. Crucially, an APP-scam step-up must NOT be an
+// identity challenge: the victim is the real account holder and will pass any
+// biometric/OTP while being coached. That case routes to SCAM_WARNING (show
+// the anti-scam friction: coaching warning, cooling-off, out-of-band confirm)
+// instead of IDENTITY (re-auth, the right tool for account takeover).
+func interventionFor(decision, threat string) string {
+	switch decision {
+	case "STEP_UP":
+		if threat == "APP Scam" {
+			return "SCAM_WARNING"
+		}
+		return "IDENTITY"
+	case "HOLD":
+		return "ANALYST_REVIEW"
+	}
+	return ""
+}
+
 func finish(signals []Signal, ctx *ScoringCtx) ScoreResult {
 	total := 0
 	reasons := make([]string, 0, len(signals))
@@ -787,7 +834,7 @@ func finish(signals []Signal, ctx *ScoringCtx) ScoreResult {
 		threat = "APP Scam"
 	case ctx.UserRef != "" &&
 		(has("REMOTE_ACCESS") || has("NEW_DEVICE_FOR_USER") || has("DEVICE_INTEGRITY") ||
-			has("SIDELOADED_APP") || has("DEBUG_BUILD") ||
+			has("SIDELOADED_APP") || has("DEBUG_BUILD") || has("STEP_UP_FAILED") ||
 			has("ACCESSIBILITY_SERVICES") || has("TOUCH_ANOMALY") ||
 			has("KEYSTROKE_ANOMALY") || has("MOUSE_ANOMALY") || has("HEADLESS_BROWSER") ||
 			has("IMPOSSIBLE_TRAVEL") || has("MOCK_LOCATION")):

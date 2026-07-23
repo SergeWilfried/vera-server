@@ -338,6 +338,7 @@ async function handleScore(req, res) {
 
   // Policy bands: 0–54 approve · 55–84 step-up · 85–100 hold for analyst
   const decision = result.score >= 85 ? 'HOLD' : result.score >= 55 ? 'STEP_UP' : 'ALLOW';
+  const intervention = scoring.interventionFor(decision, result.threatType);
 
   const alertId = await db.recordDecision({
     tenantId: v.payload.t, sessionId: v.payload.s, installId: v.payload.d,
@@ -361,6 +362,7 @@ async function handleScore(req, res) {
     reasons: result.reasons,
     signals: result.signals,
     threatType: result.threatType,
+    intervention,
     alertId,
     session: { tenantId: v.payload.t, sessionId: v.payload.s,
                installId: v.payload.d, userRef: v.payload.u || null },

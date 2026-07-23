@@ -162,6 +162,24 @@ function score(ctx, txn) {
   }
   if (paste) add('PASTE_INPUT', 'Pasted input in monitored field', 10, `field ${paste.field}`);
 
+  // --- step-up outcome (failed challenge escalates) ---------------------
+  // The bank performs the step-up (OTP/PIN/biometric/push) and reports the
+  // result via BIZ_STEP_UP_RESULT. A failed challenge on an already-scored
+  // session is a strong escalation — canonical for ATO, where an imposter
+  // fails the owner's credential. Take the LAST result: a user who retries
+  // and passes shouldn't be penalized for an earlier miss.
+  let lastStepUp = null, lastStepUpAt = 0;
+  for (const e of events) {
+    if (e.type !== 'BIZ_STEP_UP_RESULT') continue;
+    const t = new Date(e.ts).getTime();
+    if (t >= lastStepUpAt) { lastStepUpAt = t; lastStepUp = String(e.payload?.outcome ?? '').toUpperCase(); }
+  }
+  if (lastStepUp === 'FAIL' || lastStepUp === 'FAILURE' || lastStepUp === 'LOCKED') {
+    add('STEP_UP_FAILED', 'Step-up challenge failed', 35, `outcome ${lastStepUp}`);
+  } else if (lastStepUp === 'ABANDONED') {
+    add('STEP_UP_ABANDONED', 'Step-up challenge abandoned', 20, 'user left the challenge');
+  }
+
   // --- screenshot during the session (coached exfiltration) -------------
   // Under coaching, victims are told to screenshot an OTP / balance /
   // transfer confirmation and send it to the "agent". Weak on its own — low
@@ -297,7 +315,7 @@ function score(ctx, txn) {
     threatType = 'APP Scam';
   } else if (ctx.userRef &&
       (has('NEW_DEVICE_FOR_USER') || has('DEVICE_INTEGRITY') ||
-       has('SIDELOADED_APP') || has('DEBUG_BUILD') ||
+       has('SIDELOADED_APP') || has('DEBUG_BUILD') || has('STEP_UP_FAILED') ||
        has('ACCESSIBILITY_SERVICES') || has('TOUCH_ANOMALY') ||
        has('KEYSTROKE_ANOMALY'))) {
     threatType = 'Account Takeover';
@@ -387,4 +405,16 @@ function scoreAgentActivity(stats) {
   };
 }
 
-module.exports = { score, scoreAccountFlow, scoreAgentActivity };
+// interventionFor recommends HOW the bank should act on a decision — VeraWall
+// decides, the bank enforces. Crucially, an APP-scam step-up must NOT be an
+// identity challenge: the victim is the real account holder and will pass any
+// biometric/OTP while being coached. That case routes to SCAM_WARNING (show
+// the anti-scam friction: coaching warning, cooling-off, out-of-band confirm)
+// instead of IDENTITY (re-auth, the right tool for account takeover).
+function interventionFor(decision, threat) {
+  if (decision === 'STEP_UP') return threat === 'APP Scam' ? 'SCAM_WARNING' : 'IDENTITY';
+  if (decision === 'HOLD') return 'ANALYST_REVIEW';
+  return null;
+}
+
+module.exports = { score, scoreAccountFlow, scoreAgentActivity, interventionFor };

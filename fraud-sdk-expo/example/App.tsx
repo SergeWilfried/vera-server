@@ -40,6 +40,7 @@ type Decision = {
   decision?: 'ALLOW' | 'STEP_UP' | 'HOLD';
   riskScore?: number;
   threatType?: string;
+  intervention?: 'SCAM_WARNING' | 'IDENTITY' | 'ANALYST_REVIEW';
   alertId?: string;
   signals?: { weight: number; label: string; evidence?: string }[];
 };
@@ -261,6 +262,25 @@ function Outcome({ d, onDone, onBalance }: { d: Decision; onDone: () => void; on
     );
   }
   if (d.decision === 'STEP_UP') {
+    // APP-scam step-up: an identity challenge is useless — the victim IS the
+    // account holder and passes it. Show anti-scam friction instead: warn
+    // about coaching and require an explicit acknowledgement.
+    if (d.intervention === 'SCAM_WARNING') {
+      return (
+        <Card center>
+          <Badge color={C.warn} icon="📵" />
+          <Text style={styles.h2}>Is someone helping you with this?</Text>
+          <Text style={styles.sub}>
+            This transfer matches how scam payments happen — a caller guiding you to send money to a
+            "safe account". No one from Demo Bank will ever ask you to do that. If you were told to make
+            this payment, stop now.
+          </Text>
+          <Btn label="Cancel — this doesn't feel right" onPress={onDone} />
+          <Btn label="No one told me to do this — continue" ghost
+            onPress={() => setDone('Payment sent after scam-warning acknowledgement.')} />
+        </Card>
+      );
+    }
     return (
       <Card center>
         <Badge color={C.warn} icon="↑" />
