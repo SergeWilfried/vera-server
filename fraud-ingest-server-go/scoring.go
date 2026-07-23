@@ -207,9 +207,33 @@ func touchDeviation(baseline, current []Stroke, dim string) *float64 {
 }
 
 type callSignals struct {
-	InGsmCall  bool `json:"inGsmCall"`
-	InVoipCall bool `json:"inVoipCall"`
-	SpeakerOn  bool `json:"speakerOn"`
+	InGsmCall    bool `json:"inGsmCall"`
+	InVoipCall   bool `json:"inVoipCall"`
+	SpeakerOn    bool `json:"speakerOn"`
+	BtAudio      bool `json:"btAudio"`
+	WiredHeadset bool `json:"wiredHeadset"`
+}
+
+// audioRoute names the hands-free output the call audio is on, or "" when the
+// phone is at the ear. Hands-free is the stronger coached tell: at the ear the
+// victim cannot type a transfer; on speaker/headset they are free to follow
+// the caller's instructions inside the app.
+func (cs callSignals) audioRoute() string {
+	switch {
+	case cs.SpeakerOn:
+		return "speaker"
+	case cs.BtAudio:
+		return "bluetooth audio"
+	case cs.WiredHeadset:
+		return "wired headset"
+	}
+	return ""
+}
+
+type callStatePayload struct {
+	Active     bool   `json:"active"`
+	Kind       string `json:"kind"`
+	DurationMs int64  `json:"durationMs"`
 }
 
 type keystrokePayload struct {
@@ -222,6 +246,22 @@ type integrityPayload struct {
 	EmulatorLikely        bool     `json:"emulatorLikely"`
 	HookingFramework      string   `json:"hookingFramework"`
 	AccessibilityServices []string `json:"accessibilityServices"`
+	Debuggable            bool     `json:"debuggable"`
+	DevOptionsEnabled     bool     `json:"devOptionsEnabled"`
+	// Pointer: absence (older SDK builds without the field) must not read
+	// as "" — an empty string is itself the sideload indicator.
+	InstallerPackage *string `json:"installerPackage"`
+}
+
+// manualInstaller reports whether the installer package indicates a manual
+// APK install (sideload) rather than any app store. Store packages vary by
+// OEM, so only positive manual-install indicators are matched.
+func manualInstaller(pkg string) bool {
+	switch pkg {
+	case "", "com.android.packageinstaller", "com.google.android.packageinstaller":
+		return true
+	}
+	return false
 }
 
 func parsePayload[T any](raw json.RawMessage) (T, bool) {
@@ -245,6 +285,7 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 	events := ctx.Events
 
 	// --- coached-session: active call while transacting -----------------
+	activeCall := false
 	for _, e := range events {
 		if len(e.Type) < 4 || e.Type[:4] != "BIZ_" {
 			continue
@@ -258,11 +299,59 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 			kind = "VoIP"
 		}
 		ev := kind + " call"
-		if cs.SpeakerOn {
-			ev += ", speaker on"
+		route := cs.audioRoute()
+		if route != "" {
+			ev += ", " + route
 		}
 		add("ACTIVE_CALL", "Transaction session during active phone call", 35, ev)
+		if route != "" {
+			add("CALL_HANDS_FREE", "Call audio on speaker/headset while using the app", 10,
+				route+" during "+kind+" call")
+		}
+		activeCall = true
 		break
+	}
+
+	// --- coached-session: call ended moments before the transfer --------
+	// The SDK's call-state watch emits PASSIVE_CALL_STATE on every
+	// idle<->in-call transition. A call that ends just before
+	// TXN_INITIATED is the "hang up, then send it" coaching pattern the
+	// per-event snapshot cannot see. Skipped when ACTIVE_CALL already
+	// fired — the live call is the stronger form of the same fact.
+	if !activeCall {
+		var callEndAt, txnAt time.Time
+		var endKind string
+		var callDurMs int64
+		for _, e := range events {
+			switch e.Type {
+			case "PASSIVE_CALL_STATE":
+				p, ok := parsePayload[callStatePayload](e.Payload)
+				if ok && !p.Active && e.Ts.After(callEndAt) {
+					callEndAt = e.Ts
+					endKind = p.Kind
+					callDurMs = p.DurationMs
+				}
+			case "BIZ_TXN_INITIATED":
+				if e.Ts.After(txnAt) {
+					txnAt = e.Ts
+				}
+			}
+		}
+		if !callEndAt.IsZero() && txnAt.After(callEndAt) {
+			gap := txnAt.Sub(callEndAt)
+			if gap <= 5*time.Minute {
+				when := fmt.Sprintf("%ds", int(gap.Seconds()))
+				if gap >= time.Minute {
+					when = fmt.Sprintf("%d min", int(gap.Minutes()))
+				}
+				ev := endKind + " call"
+				if callDurMs >= 60000 {
+					ev += fmt.Sprintf(" (%d min)", callDurMs/60000)
+				}
+				add("RECENT_CALL", "Call ended moments before the transfer", 25,
+					ev+" ended "+when+" before transfer")
+			}
+		}
 	}
 
 	// --- payee & amount --------------------------------------------------
@@ -397,6 +486,19 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 				ev += a
 			}
 			add("ACCESSIBILITY_SERVICES", "Accessibility services active", 15, ev)
+		}
+		if integ.Debuggable {
+			add("DEBUG_BUILD", "App build is debuggable", 20, "FLAG_DEBUGGABLE set")
+		}
+		if integ.DevOptionsEnabled {
+			add("DEV_OPTIONS", "Developer options enabled", 10, "developer settings on")
+		}
+		if integ.InstallerPackage != nil && manualInstaller(*integ.InstallerPackage) {
+			ev := "no installer package (manual install)"
+			if *integ.InstallerPackage != "" {
+				ev = "installer \"" + *integ.InstallerPackage + "\""
+			}
+			add("SIDELOADED_APP", "App installed outside an app store", 25, ev)
 		}
 		break
 	}
@@ -668,11 +770,12 @@ func finish(signals []Signal, ctx *ScoringCtx) ScoreResult {
 	}
 	threat := ""
 	switch {
-	case (has("ACTIVE_CALL") || has("RUSHED_NEW_PAYEE")) &&
+	case (has("ACTIVE_CALL") || has("RECENT_CALL") || has("RUSHED_NEW_PAYEE")) &&
 		(has("NEW_PAYEE") || has("AMOUNT_ABOVE_PROFILE") || has("HIGH_AMOUNT")):
 		threat = "APP Scam"
 	case ctx.UserRef != "" &&
 		(has("REMOTE_ACCESS") || has("NEW_DEVICE_FOR_USER") || has("DEVICE_INTEGRITY") ||
+			has("SIDELOADED_APP") || has("DEBUG_BUILD") ||
 			has("ACCESSIBILITY_SERVICES") || has("TOUCH_ANOMALY") ||
 			has("KEYSTROKE_ANOMALY") || has("MOUSE_ANOMALY") || has("HEADLESS_BROWSER") ||
 			has("IMPOSSIBLE_TRAVEL") || has("MOCK_LOCATION")):

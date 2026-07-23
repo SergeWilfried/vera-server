@@ -8,6 +8,7 @@ import android.widget.EditText;
 
 import com.fraudsdk.capture.KeystrokeCapture;
 import com.fraudsdk.capture.TouchCapture;
+import com.fraudsdk.collectors.CallStateWatch;
 import com.fraudsdk.collectors.DeviceFingerprintCollector;
 import com.fraudsdk.collectors.IntegrityCollector;
 import com.fraudsdk.collectors.LocationCollector;
@@ -53,6 +54,7 @@ public final class FraudSdk {
     private final SessionManager sessionManager;
     private final EventQueue queue;
     private final EventUploader uploader;
+    private final CallStateWatch callWatch;
 
     private FraudSdk(Context app, SdkConfig config) {
         this.config = config;
@@ -60,6 +62,7 @@ public final class FraudSdk {
         this.queue = new EventQueue(app);
         this.sessionManager = new SessionManager(app, config, queue);
         this.uploader = new EventUploader(app, config, queue, sessionManager);
+        this.callWatch = new CallStateWatch(app, sessionManager);
     }
 
     /** Call once from Application.onCreate(). Idempotent. */
@@ -90,6 +93,7 @@ public final class FraudSdk {
                 });
 
                 sdk.uploader.start();
+                sdk.callWatch.start();
             }
         } catch (Throwable t) {
             Log.w(TAG, "init failed, SDK disabled", t);

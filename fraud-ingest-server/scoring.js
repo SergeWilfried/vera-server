@@ -61,13 +61,76 @@ function score(ctx, txn) {
     e.type.startsWith('BIZ_') &&
     (e.call_signals?.inGsmCall || e.call_signals?.inVoipCall));
   if (inCall) {
+    const cs = inCall.call_signals;
+    const kind = cs.inVoipCall ? 'VoIP' : 'GSM';
+    // Hands-free is the stronger coached tell: at the ear the victim cannot
+    // type a transfer; on speaker/headset they are free to follow the
+    // caller's instructions inside the app.
+    const route = cs.speakerOn ? 'speaker'
+      : cs.btAudio ? 'bluetooth audio'
+      : cs.wiredHeadset ? 'wired headset' : '';
     add('ACTIVE_CALL', 'Transaction session during active phone call', 35,
-        `${inCall.call_signals.inVoipCall ? 'VoIP' : 'GSM'} call` +
-        (inCall.call_signals.speakerOn ? ', speaker on' : ''));
+        `${kind} call` + (route ? `, ${route}` : ''));
+    if (route) {
+      add('CALL_HANDS_FREE', 'Call audio on speaker/headset while using the app', 10,
+          `${route} during ${kind} call`);
+    }
+  }
+
+  // --- coached-session: call ended moments before the transfer ----------
+  // The SDK's call-state watch emits PASSIVE_CALL_STATE on every
+  // idle<->in-call transition. A call that ends just before TXN_INITIATED
+  // is the "hang up, then send it" coaching pattern the per-event snapshot
+  // cannot see. Skipped when ACTIVE_CALL already fired — the live call is
+  // the stronger form of the same fact.
+  if (!inCall) {
+    let callEndAt = 0, endKind = '', callDurMs = 0, txnInitAt = 0;
+    for (const e of events) {
+      const t = new Date(e.ts).getTime();
+      if (e.type === 'PASSIVE_CALL_STATE' && e.payload?.active === false && t > callEndAt) {
+        callEndAt = t;
+        endKind = e.payload.kind || '';
+        callDurMs = e.payload.durationMs || 0;
+      }
+      if (e.type === 'BIZ_TXN_INITIATED' && t > txnInitAt) txnInitAt = t;
+    }
+    if (callEndAt && txnInitAt > callEndAt) {
+      const gap = txnInitAt - callEndAt;
+      if (gap <= 5 * 60000) {
+        const when = gap >= 60000
+          ? `${Math.floor(gap / 60000)} min` : `${Math.floor(gap / 1000)}s`;
+        const ev = `${endKind} call` +
+          (callDurMs >= 60000 ? ` (${Math.floor(callDurMs / 60000)} min)` : '');
+        add('RECENT_CALL', 'Call ended moments before the transfer', 25,
+            `${ev} ended ${when} before transfer`);
+      }
+    }
   }
 
   // --- payee & amount ---------------------------------------------------
-  if (txn.payeeIsNew) add('NEW_PAYEE', 'First-time payee', 15, 'asserted by tenant backend');
+  if (txn.payeeIsNew) {
+    add('NEW_PAYEE', 'First-time payee', 15, 'asserted by tenant backend');
+
+    // APP-scam tell: the payee was created moments ago, in this very
+    // session, and is being paid straight away — the "add payee, send
+    // everything" pattern of a live coaching call. A legitimate new payee
+    // is usually added, then paid days later.
+    let payeeAddedAt = 0, txnInitAt = 0;
+    for (const e of events) {
+      const t = new Date(e.ts).getTime();
+      if (e.type === 'BIZ_PAYEE_ADDED' && t > payeeAddedAt) payeeAddedAt = t;
+      if (e.type === 'BIZ_TXN_INITIATED' && t > txnInitAt) txnInitAt = t;
+    }
+    if (!txnInitAt) txnInitAt = Date.now();
+    if (payeeAddedAt && txnInitAt >= payeeAddedAt) {
+      const gap = txnInitAt - payeeAddedAt;
+      if (gap <= 30 * 60000) {
+        const when = gap >= 60000 ? `${Math.floor(gap / 60000)} min` : 'seconds';
+        add('RUSHED_NEW_PAYEE', 'New payee paid immediately after adding', 20,
+            `payee added ${when} before transfer`);
+      }
+    }
+  }
 
   const amount = Number(txn.amount) || 0;
   const hist = (ctx.amountHistory || []).filter(a => a > 0);
@@ -124,6 +187,23 @@ function score(ctx, txn) {
     const acc = integ.accessibilityServices;
     if (Array.isArray(acc) && acc.length)
       add('ACCESSIBILITY_SERVICES', 'Accessibility services active', 15, acc.join(', '));
+    if (integ.debuggable)
+      add('DEBUG_BUILD', 'App build is debuggable', 20, 'FLAG_DEBUGGABLE set');
+    if (integ.devOptionsEnabled)
+      add('DEV_OPTIONS', 'Developer options enabled', 10, 'developer settings on');
+    // Field presence matters: absence (older SDK builds) must not read as
+    // "" — an empty string is itself the sideload indicator. Store packages
+    // vary by OEM, so only positive manual-install indicators are matched.
+    if ('installerPackage' in integ) {
+      const inst = integ.installerPackage || '';
+      const manual = inst === '' ||
+        inst === 'com.android.packageinstaller' ||
+        inst === 'com.google.android.packageinstaller';
+      if (manual) {
+        add('SIDELOADED_APP', 'App installed outside an app store', 25,
+            inst ? `installer "${inst}"` : 'no installer package (manual install)');
+      }
+    }
   }
 
   // --- touch behavior vs. baseline -------------------------------------
@@ -203,11 +283,12 @@ function score(ctx, txn) {
   const has = code => signals.some(s => s.code === code);
 
   let threatType = null;
-  if (has('ACTIVE_CALL') &&
+  if ((has('ACTIVE_CALL') || has('RECENT_CALL') || has('RUSHED_NEW_PAYEE')) &&
       (has('NEW_PAYEE') || has('AMOUNT_ABOVE_PROFILE') || has('HIGH_AMOUNT'))) {
     threatType = 'APP Scam';
   } else if (ctx.userRef &&
       (has('NEW_DEVICE_FOR_USER') || has('DEVICE_INTEGRITY') ||
+       has('SIDELOADED_APP') || has('DEBUG_BUILD') ||
        has('ACCESSIBILITY_SERVICES') || has('TOUCH_ANOMALY') ||
        has('KEYSTROKE_ANOMALY'))) {
     threatType = 'Account Takeover';
