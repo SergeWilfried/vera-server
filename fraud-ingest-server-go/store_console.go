@@ -876,11 +876,86 @@ func (s *Server) listAnalysts(ctx context.Context, tenantID string) ([]map[strin
 // ---------- tenant settings ----------
 
 // Default console settings for a tenant with no stored overrides.
+// defaultHighAmount is the per-currency "high amount, no spending history"
+// cutoff, keyed by ISO currency code (uppercase) plus a DEFAULT fallback.
+// Roughly a few hundred EUR of purchasing power each — a low bar, since it
+// only fires when there is no history to compare the amount against. Tenants
+// override via settings.risk.highAmount.
+func defaultHighAmount() map[string]float64 {
+	return map[string]float64{
+		"XOF": 500000, "XAF": 500000, // BCEAO / BEAC CFA franc — ~€760
+		"NGN":     1000000, // Nigerian naira
+		"GHS":     8000,    // Ghanaian cedi
+		"KES":     80000,   // Kenyan shilling
+		"CZK":     50000,   // Czech koruna (demo)
+		"EUR":     2000,
+		"USD":     2000,
+		"GBP":     2000,
+		"DEFAULT": 500000,
+	}
+}
+
+func defaultHighAmountAny() map[string]any {
+	out := map[string]any{}
+	for k, v := range defaultHighAmount() {
+		out[k] = v
+	}
+	return out
+}
+
+// highAmountThreshold resolves the "high amount, no history" cutoff for a
+// tenant + currency: settings.risk.highAmount[CCY], else that map's DEFAULT,
+// else the baked per-currency default, else the global default. Currency
+// codes are matched case-insensitively. Never errors — a missing/garbled
+// override falls back to the defaults so scoring always has a sane cutoff.
+func (s *Server) highAmountThreshold(ctx context.Context, tenantID, currency string) float64 {
+	table := defaultHighAmount()
+	var raw []byte
+	if err := s.pool.QueryRow(ctx,
+		`SELECT settings FROM tenant_settings WHERE tenant_id=$1`, tenantID).Scan(&raw); err == nil && len(raw) > 0 {
+		var stored map[string]any
+		if json.Unmarshal(raw, &stored) == nil {
+			if risk, ok := stored["risk"].(map[string]any); ok {
+				if ha, ok := risk["highAmount"].(map[string]any); ok {
+					for k, v := range ha {
+						if f, ok := toFloat(v); ok {
+							table[strings.ToUpper(k)] = f
+						}
+					}
+				}
+			}
+		}
+	}
+	if t, ok := table[strings.ToUpper(currency)]; ok {
+		return t
+	}
+	if t, ok := table["DEFAULT"]; ok {
+		return t
+	}
+	return defaultHighAmountCutoff
+}
+
+func toFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	}
+	return 0, false
+}
+
 func defaultSettings() map[string]any {
 	return map[string]any{
 		"tenant": map[string]any{
 			"name": "Demo Bank", "environment": "Production", "dataRegion": "EU (Frankfurt)",
 			"dataRetention": "13 months", "platformVersion": "BIP 8.4.2",
+		},
+		"risk": map[string]any{
+			"highAmount": defaultHighAmountAny(),
 		},
 		"notifications": map[string]any{
 			"digest": true, "webhook": true, "sms": true, "weekly": true,

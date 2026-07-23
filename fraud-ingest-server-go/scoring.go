@@ -76,10 +76,27 @@ type ScoringCtx struct {
 	LastFixGeohash       string     // most recent prior location fix …
 	LastFixAt            *time.Time // … and when it was reported
 	AmountHistory        []float64
+	// Per-tenant, per-currency "high amount, no history" cutoff, resolved for
+	// txn.Currency by the handler. <=0 means unset -> fall back to the global
+	// default (see highAmountCutoff). The history-based AMOUNT_ABOVE_PROFILE
+	// branch is already currency-safe (relative to the user's own median).
+	HighAmountThreshold  float64
 	HasBankFlow          bool
 	FlowIn72             float64
 	FlowLastInAt         *time.Time
 	FlowFan              int
+}
+
+// defaultHighAmount cutoff, used when no override is configured — a low bar
+// per currency (roughly a few hundred EUR) for "unusually large with no
+// spending history to compare against".
+const defaultHighAmountCutoff = 500000.0
+
+func highAmountCutoff(t float64) float64 {
+	if t > 0 {
+		return t
+	}
+	return defaultHighAmountCutoff
 }
 
 type ScoreTxn struct {
@@ -431,9 +448,13 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 				fmt.Sprintf("%.0f vs. median %.0f over %d approved txns",
 					txn.Amount, med, len(hist)))
 		}
-	} else if txn.Amount >= 500000 {
+	} else if cutoff := highAmountCutoff(ctx.HighAmountThreshold); txn.Amount >= cutoff {
+		ccy := txn.Currency
+		if ccy == "" {
+			ccy = "amount"
+		}
 		add("HIGH_AMOUNT", "High amount, no spending history", 20,
-			fmt.Sprintf("amount %.0f", txn.Amount))
+			fmt.Sprintf("%.0f %s (>= %.0f)", txn.Amount, ccy, cutoff))
 	}
 
 	// --- keystroke dynamics ----------------------------------------------

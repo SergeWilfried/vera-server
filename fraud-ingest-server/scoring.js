@@ -140,8 +140,14 @@ function score(ctx, txn) {
       add('AMOUNT_ABOVE_PROFILE', 'Amount far above learned profile', 25,
           `${amount} vs. median ${med} over ${hist.length} approved txns`);
     }
-  } else if (amount >= 500000) {
-    add('HIGH_AMOUNT', 'High amount, no spending history', 20, `amount ${amount}`);
+  } else {
+    // Per-tenant, per-currency cutoff resolved by the caller; <=0 -> default.
+    // The history branch above is already currency-safe (own-median relative).
+    const cutoff = ctx.highAmountThreshold > 0 ? ctx.highAmountThreshold : 500000;
+    if (amount >= cutoff) {
+      add('HIGH_AMOUNT', 'High amount, no spending history', 20,
+          `${amount} ${txn.currency || 'amount'} (>= ${cutoff})`);
+    }
   }
 
   // --- keystroke dynamics ----------------------------------------------
