@@ -981,6 +981,7 @@ func defaultSettings() map[string]any {
 		"tenant": map[string]any{
 			"name": "Demo Bank", "environment": "Production", "dataRegion": "EU (Frankfurt)",
 			"dataRetention": "13 months", "platformVersion": "BIP 8.4.2",
+			"currency": "XOF", // primary operating currency (most tenants are single-currency)
 		},
 		"risk": map[string]any{
 			"highAmount": defaultHighAmountAny(),
