@@ -67,7 +67,7 @@ Each signal is `{code, label, weight, evidence}`; the total is capped at 100.
 | RAPID_TO_TXN | 10 | new-payee txn < 20s after session start |
 
 Threat classification (stored on the alert): APP Scam, Account Takeover,
-Money Mule, New Account Fraud, Agent Commission Fraud — derived from
+Money Mule, New Account Fraud, Commission Fraud — derived from
 which signals co-fire.
 
 The **ledger-only detector** (`scoreAccountFlow`) runs on feed ingestion,

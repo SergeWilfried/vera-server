@@ -288,7 +288,7 @@ async function handleTransactions(req, res) {
                    txn: { accountRef, in72: flow.in72, out24: flow.out24,
                           fanOut24: flow.fanOut24 } };
         } },
-      { threatType: 'Agent Commission Fraud', label: 'commission pattern',
+      { threatType: 'Commission Fraud', label: 'commission pattern',
         run: async () => {
           const stats = await db.getAgentActivity(tenantId, accountRef);
           return { result: scoring.scoreAgentActivity(stats),

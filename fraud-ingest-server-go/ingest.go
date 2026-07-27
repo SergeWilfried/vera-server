@@ -206,7 +206,7 @@ func (s *Server) handleTransactions(w http.ResponseWriter, r *http.Request) {
 					"accountRef": accountRef, "in72": flow.In72,
 					"out24": flow.Out24, "fanOut24": flow.FanOut24}, nil
 			}},
-			{"Agent Commission Fraud", "commission pattern", func() (ScoreResult, map[string]any, error) {
+			{"Commission Fraud", "commission pattern", func() (ScoreResult, map[string]any, error) {
 				st, err := s.getAgentActivity(ctx, tenantID, accountRef, 10000)
 				if err != nil {
 					return ScoreResult{}, nil, err

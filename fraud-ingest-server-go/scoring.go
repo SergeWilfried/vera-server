@@ -1081,7 +1081,7 @@ func scoreAgentActivity(st AgentStats) ScoreResult {
 	if len(signals) == 0 {
 		r.Summary = "No commission anomalies"
 	} else {
-		r.ThreatType = "Agent Commission Fraud"
+		r.ThreatType = "Commission Fraud"
 	}
 	return r
 }

@@ -518,7 +518,7 @@ const scenarios = {
     console.log(`\n${ok ? '✓' : '✗'} agent: alert=${got.alerts[0] || 'none'} ` +
         `(commission split) · follow-up alerts=${followUp.alerts.length}`);
     if (!ok) {
-      console.log('  EXPECTED one Agent Commission Fraud alert, no duplicate', got, followUp);
+      console.log('  EXPECTED one Commission Fraud alert, no duplicate', got, followUp);
       process.exitCode = 1;
     }
   },
