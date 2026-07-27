@@ -619,15 +619,51 @@ func (s *Server) maybeOpenAmlCase(ctx context.Context, tenantID, alertID, actor 
 	return caseID, tx.Commit(ctx)
 }
 
-func (s *Server) listCases(ctx context.Context, tenantID, status string, limit int) ([]map[string]any, error) {
+// listCases returns one page of cases plus the total for the filter, so the
+// console can page through the whole set instead of a capped fetch.
+func (s *Server) listCases(ctx context.Context, tenantID, status string, limit, offset int) ([]map[string]any, int, error) {
+	var total int
+	var items []map[string]any
+	var err error
 	if status != "" {
-		return queryMaps(ctx, s.pool,
+		if err = s.pool.QueryRow(ctx,
+			`SELECT count(*) FROM cases WHERE tenant_id=$1 AND status=$2`, tenantID, status).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+		items, err = queryMaps(ctx, s.pool,
 			`SELECT * FROM cases WHERE tenant_id=$1 AND status=$2
-			 ORDER BY created_at DESC LIMIT $3`, tenantID, status, limit)
+			 ORDER BY created_at DESC LIMIT $3 OFFSET $4`, tenantID, status, limit, offset)
+	} else {
+		if err = s.pool.QueryRow(ctx,
+			`SELECT count(*) FROM cases WHERE tenant_id=$1`, tenantID).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+		items, err = queryMaps(ctx, s.pool,
+			`SELECT * FROM cases WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+			tenantID, limit, offset)
 	}
-	return queryMaps(ctx, s.pool,
-		`SELECT * FROM cases WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT $2`,
-		tenantID, limit)
+	return items, total, err
+}
+
+// caseStatusCounts is the per-status total over ALL cases (independent of the
+// current page/filter) — powers the queue's KPI tiles.
+func (s *Server) caseStatusCounts(ctx context.Context, tenantID string) (map[string]int, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT status, count(*)::int FROM cases WHERE tenant_id=$1 GROUP BY status`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var st string
+		var n int
+		if err := rows.Scan(&st, &n); err != nil {
+			return nil, err
+		}
+		out[st] = n
+	}
+	return out, rows.Err()
 }
 
 func (s *Server) getCase(ctx context.Context, tenantID, id string) (map[string]any, error) {

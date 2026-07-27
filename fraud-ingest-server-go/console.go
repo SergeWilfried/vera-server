@@ -105,6 +105,15 @@ func limitOf(q url.Values, def, max int) int {
 	return def
 }
 
+func offsetOf(q url.Values) int {
+	if v := q.Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
 func str(body map[string]any, key string) string {
 	v, _ := body[key].(string)
 	return v
@@ -225,7 +234,12 @@ func (s *Server) consoleRoutes() []consoleRoute {
 			}),
 		R("GET", `^/v1/console/cases$`, rankRead,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
-				return ok(s.listCases(ctx, t, q.Get("status"), limitOf(q, 50, 200)))
+				items, total, err := s.listCases(ctx, t, q.Get("status"), limitOf(q, 50, 200), offsetOf(q))
+				if err != nil {
+					return ok(nil, err)
+				}
+				counts, _ := s.caseStatusCounts(ctx, t)
+				return map[string]any{"items": items, "total": total, "statusCounts": counts}, 200
 			}),
 		R("GET", `^/v1/console/cases/([\w-]+)$`, rankRead,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
