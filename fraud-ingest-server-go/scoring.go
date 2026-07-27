@@ -1044,8 +1044,9 @@ func scoreAccountFlow(f AccountFlow) ScoreResult {
 	r := finish(signals, &ScoringCtx{})
 	if len(signals) == 0 {
 		r.Summary = "No flow anomalies"
+	} else {
+		r.ThreatType = "Money Mule" // account-flow anomalies are mule-side
 	}
-	r.ThreatType = ""
 	return r
 }
 
@@ -1079,7 +1080,8 @@ func scoreAgentActivity(st AgentStats) ScoreResult {
 	r := finish(signals, &ScoringCtx{})
 	if len(signals) == 0 {
 		r.Summary = "No commission anomalies"
+	} else {
+		r.ThreatType = "Agent Commission Fraud"
 	}
-	r.ThreatType = ""
 	return r
 }
