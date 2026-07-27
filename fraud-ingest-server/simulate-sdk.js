@@ -432,6 +432,68 @@ const scenarios = {
     }
   },
 
+  /** Install novelty: a fresh install (age minutes) must raise NEW_INSTALL —
+   *  device/account novelty the ledger can't see. Guards the SDK->engine
+   *  firstSeen/installAgeMs path. */
+  async newinstall() {
+    const u = newUser();
+    const s = crypto.randomUUID();
+    const t0 = Date.now();
+    await sendBatch(u.install, [
+      { type: 'PASSIVE_DEVICE_FINGERPRINT', sessionId: s, installId: u.install, ts: t0,
+        payload: { model: 'Pixel', platform: 'android', firstSeen: t0 - 120000, installAgeMs: 120000 } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s, installId: u.install, userRef: u.ref,
+        ts: t0 + 500, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+    ]);
+    const got = await sendScore(mintToken(s, u.install, u.ref),
+      { txnRef: 'TXN-NI', amount: 30000, currency: 'XOF', payeeIsNew: true });
+    const has = (got.signals || []).some((x) => x.code === 'NEW_INSTALL');
+    console.log(`\n${has ? '✓' : '✗'} newinstall: ${got.decision} (${got.riskScore}) — ` +
+        `NEW_INSTALL ${has ? 'present' : 'MISSING'}`);
+    if (!has) {
+      console.log('  EXPECTED NEW_INSTALL in signals:', (got.signals || []).map((x) => x.code));
+      process.exitCode = 1;
+    }
+  },
+
+  /** Novelty gate (negative test): an ESTABLISHED account forwarding a recent
+   *  inflow must NOT trip RAPID_IN_OUT — fast in-then-out is normal once an
+   *  account has history. The `mule` scenario covers the positive (new account
+   *  DOES fire); together they pin the gate that a rules refactor could break. */
+  async establishedmule() {
+    const u = newUser();
+    const acct = 'acc-' + crypto.randomUUID().slice(0, 12);
+    const old = Date.now() - 30 * DAY;
+    await sendFeed([
+      { txnRef: 'F-' + crypto.randomUUID().slice(0, 8), accountRef: acct, userRef: u.ref,
+        direction: 'IN', amount: 40000, currency: 'CZK', counterpartyRef: 'cp-salary',
+        channel: 'BANK_TRANSFER', ts: old },
+      { txnRef: 'F-' + crypto.randomUUID().slice(0, 8), accountRef: acct, userRef: u.ref,
+        direction: 'OUT', amount: 12000, currency: 'CZK', counterpartyRef: 'cp-rent',
+        channel: 'BANK_TRANSFER', ts: old + DAY },
+      { txnRef: 'F-' + crypto.randomUUID().slice(0, 8), accountRef: acct, userRef: u.ref,
+        direction: 'IN', amount: 650000, currency: 'CZK', counterpartyRef: 'cp-source',
+        channel: 'BANK_TRANSFER', ts: Date.now() - 10 * 60000 }]);
+    const s = crypto.randomUUID();
+    const t0 = Date.now();
+    await sendBatch(u.install, [
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s, installId: u.install, userRef: u.ref,
+        ts: t0 + 1000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      { type: 'BIZ_TXN_INITIATED', sessionId: s, installId: u.install, userRef: u.ref,
+        ts: t0 + 15000, callSignals: noCall,
+        payload: { amountBucket: 'VERY_HIGH', currency: 'CZK', payeeIsNew: true, channel: 'P2P' } }]);
+    const got = await sendScore(mintToken(s, u.install, u.ref),
+      { txnRef: 'TXN-EST', amount: 600000, currency: 'CZK', payeeIsNew: true });
+    const rapid = (got.signals || []).some((x) => x.code === 'RAPID_IN_OUT');
+    console.log(`\n${rapid ? '✗' : '✓'} establishedmule: ${got.decision} (${got.riskScore}) — ` +
+        `RAPID_IN_OUT ${rapid ? 'FIRED (gate failed)' : 'correctly suppressed on an established account'}`);
+    if (rapid) {
+      console.log('  EXPECTED RAPID_IN_OUT suppressed (account has prior activity):',
+          (got.signals || []).map((x) => x.code));
+      process.exitCode = 1;
+    }
+  },
+
   /** Agent commission fraud ("fraude à la commission agent"): an agent
    *  splits one deposit into a burst of near-identical small cash-ins to
    *  the same customer to farm per-transaction commissions. Ledger-only;
@@ -1231,6 +1293,7 @@ const scenarios = {
     await scenarios.clean(); await scenarios.coached();
     await scenarios.ato(); await scenarios.mule();
     await scenarios.feedmule(); await scenarios.agent();
+    await scenarios.newinstall(); await scenarios.establishedmule();
     await scenarios.actions(); await scenarios.auth();
   },
 
