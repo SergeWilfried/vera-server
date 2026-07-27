@@ -1,11 +1,11 @@
-// Demo Bank (Expo) — the mobile twin of fraud-sdk-web/demo. Sign in → dashboard
-// → transfer → live ALLOW / STEP-UP / HOLD, scored by Verawall. The bank's tiny
-// backend (../../fraud-sdk-web/demo/server.mjs, port 8099) makes the real
-// server-to-server /v1/score call; the app only proves the session via the SDK.
+// Demo Bank (Expo) — jumeau mobile de fraud-sdk-web/demo. Connexion → tableau de
+// bord → virement → verdict ALLOW / STEP-UP / HOLD en direct, évalué par Verawall.
+// Le backend de la banque appelle /v1/score de serveur à serveur ; l'app ne fait
+// que prouver la session via le SDK.
 //
-// Screen-share detection: in Expo Go there's no native module, so the "Simulate
-// screen-share" switch stands in for it via FraudSdk.reportRemoteAccess() — same
-// as the web demo. In a dev build the bundled native module reports it for real.
+// Partage d'écran / appel : Expo Go n'exécute pas de code natif, donc les
+// interrupteurs « Simuler … » les remplacent via FraudSdk.reportRemoteAccess() /
+// reportCallState(). En dev build, les modules natifs les détectent pour de vrai.
 
 import React, { useEffect, useMemo, useState } from 'react';
 import {
@@ -15,37 +15,61 @@ import { StatusBar } from 'expo-status-bar';
 import Constants from 'expo-constants';
 import { FraudSdk, BusinessEvent, type LocalRisk } from '@veratools/fraud-sdk-expo';
 
-// Dev default: reach the dev machine from the simulator/device via the Metro
-// host IP. Deployed build: set EXPO_PUBLIC_COLLECTOR_URL (and optionally
-// EXPO_PUBLIC_BANK_BACKEND) at build time — with a collector URL and no bank
-// backend, the app calls /v1/score directly. That is a DEMO-ONLY shortcut so
-// a standalone APK works without deploying server.mjs; a real integration
-// keeps the score call server-to-server behind the bank's backend.
+// Dev : joindre la machine de dev depuis le simulateur/appareil via l'IP hôte de
+// Metro. Build déployé : EXPO_PUBLIC_COLLECTOR_URL (et éventuellement
+// EXPO_PUBLIC_BANK_BACKEND) au build — avec une URL de collecteur et sans backend
+// bancaire, l'app appelle /v1/score directement. Raccourci DÉMO uniquement pour
+// qu'un APK autonome fonctionne sans déployer server.mjs ; une vraie intégration
+// garde l'appel de score de serveur à serveur derrière le backend de la banque.
 const HOST = (Constants.expoConfig?.hostUri ?? 'localhost:8081').split(':')[0];
 const COLLECTOR = process.env.EXPO_PUBLIC_COLLECTOR_URL ?? `http://${HOST}:8080`;
 const BACKEND = process.env.EXPO_PUBLIC_BANK_BACKEND ??
   (process.env.EXPO_PUBLIC_COLLECTOR_URL ? '' : `http://${HOST}:8099`);
 const TENANT = 'wallet-acme';
 const SITE_KEY = 'site_wallet-acme_pub';
-const DEMO_EMAIL = 'olivia@demobank.cz';
 
-type Preset = { id: string; title: string; sub: string; amount: number; newPayee: boolean; rushed?: boolean };
+// Identité HACHÉE, gardée stable : c'est le profil comportemental que le serveur
+// de démo connaît (historique, médiane des montants). NE PAS changer, sinon les
+// scénarios STEP-UP/HOLD sous-évaluent. Le persona AFFICHÉ, lui, est francophone.
+const DEMO_REF = 'olivia@demobank.cz';
+const PERSONA = { name: 'Awa Diallo', phone: '+225 07 88 •• 12' };
+
+type Tone = 'ok' | 'warn' | 'stop';
+type Preset = {
+  id: string; title: string; sub: string; amount: number; newPayee: boolean; rushed?: boolean;
+  threat: string; tone: Tone;
+  /** Id stable -> bénéficiaire récurrent ; absent -> nouveau bénéficiaire à chaque envoi. */
+  payee?: string;
+  /** Demandes antérieures au même bénéficiaire, évaluées d'abord — l'escalade. */
+  story?: number[];
+  /** Rafale : N virements rapides d'affilée pour faire monter la vélocité. */
+  burst?: number;
+};
 const PRESETS: Preset[] = [
-  { id: 'rent', title: 'Pay landlord', sub: '8,000 FCFA · known payee', amount: 8000, newPayee: false },
-  { id: 'attack', title: 'New payee — large', sub: '150,000 FCFA · first-time payee', amount: 150000, newPayee: true },
-  { id: 'coached', title: 'Coached transfer', sub: '90,000 FCFA · payee added just now', amount: 90000, newPayee: true, rushed: true },
+  { id: 'rent', title: 'Payer le loyer', sub: '8 000 FCFA · bénéficiaire connu', amount: 8000, newPayee: false, payee: 'PAYEE-RENT', threat: 'Légitime', tone: 'ok' },
+  { id: 'attack', title: 'Nouveau bénéficiaire — gros montant', sub: '150 000 FCFA · première fois', amount: 150000, newPayee: true, threat: 'Prise de contrôle', tone: 'stop' },
+  { id: 'coached', title: 'Virement sous coaching', sub: '90 000 FCFA · bénéficiaire ajouté à l’instant', amount: 90000, newPayee: true, rushed: true, threat: 'Arnaque APP', tone: 'stop' },
+  { id: 'invest', title: 'Arnaque à l’investissement — les demandes montent', sub: '3 000 → 5 400 → 9 800 déjà envoyés à un « conseiller » · puis le montant ci-dessous', amount: 30000, newPayee: false, story: [3000, 5400, 9800], threat: 'Arnaque investissement', tone: 'stop' },
+  { id: 'drain', title: 'Rafale de virements — vidage de compte', sub: '8 virements rapides du montant ci-dessous · la vélocité passe de ALLOW à HOLD', amount: 12000, newPayee: false, payee: 'PAYEE-DRAIN', burst: 8, threat: 'Vidage de compte', tone: 'stop' },
 ];
 
+type Intervention = 'SCAM_WARNING' | 'IDENTITY' | 'ANALYST_REVIEW';
 type Decision = {
   decision?: 'ALLOW' | 'STEP_UP' | 'HOLD';
   riskScore?: number;
   threatType?: string;
-  intervention?: 'SCAM_WARNING' | 'IDENTITY' | 'ANALYST_REVIEW';
+  intervention?: Intervention;
   alertId?: string;
   signals?: { weight: number; label: string; evidence?: string }[];
 };
 
-const fmt = (n: number) => n.toLocaleString('en-US');
+const INTERVENTION_FR: Record<Intervention, string> = {
+  SCAM_WARNING: 'Avertissement anti-arnaque (pas de défi d’identité)',
+  IDENTITY: 'Défi d’identité (code à usage unique)',
+  ANALYST_REVIEW: 'Revue analyste / blocage',
+};
+
+const fmt = (n: number) => n.toLocaleString('fr-FR');
 
 export default function App() {
   const [ready, setReady] = useState(false);
@@ -53,6 +77,8 @@ export default function App() {
   const [balance, setBalance] = useState(184320);
   const [pin, setPin] = useState('481920');
   const [pick, setPick] = useState<Preset>(PRESETS[0]);
+  const [amountStr, setAmountStr] = useState(String(PRESETS[0].amount));
+  const [lastAmount, setLastAmount] = useState(0);
   const [verdict, setVerdict] = useState<Decision | null>(null);
   const [riskReasons, setRiskReasons] = useState<string[]>([]);
   const [shareSim, setShareSim] = useState(false);
@@ -60,6 +86,7 @@ export default function App() {
   const [preventShots, setPreventShots] = useState(false);
   const [shotSeen, setShotSeen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -78,46 +105,88 @@ export default function App() {
   const touch = useMemo(() => (ready ? FraudSdk.touch() : { panHandlers: {}, flush: () => {} }), [ready]);
   const pinTrack = useMemo(() => FraudSdk.trackInput('login.pin'), []);
 
+  function choose(p: Preset) {
+    setPick(p);
+    setAmountStr(String(p.amount));
+  }
+
   async function login() {
-    FraudSdk.session().setUser(await FraudSdk.hash(DEMO_EMAIL));
+    FraudSdk.session().setUser(await FraudSdk.hash(DEMO_REF));
     FraudSdk.session().event(BusinessEvent.loginResult('SUCCESS'));
     FraudSdk.session().screenView('dashboard');
     setScreen('dashboard');
   }
 
-  async function pay(p: Preset) {
+  async function scorePayment(token: string, amount: number, payeeNew: boolean, payeeRef: string): Promise<Decision> {
+    const res = BACKEND
+      ? await fetch(`${BACKEND}/demo/pay`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, amount, payeeNew, payeeRef }),
+        })
+      : await fetch(`${COLLECTOR}/v1/score`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionToken: token,
+            transaction: {
+              txnRef: 'DEMO-' + Date.now(), amount, currency: 'XOF',
+              payeeIsNew: payeeNew, payeeRef, channel: 'BANK_TRANSFER',
+            },
+          }),
+        });
+    return res.json();
+  }
+
+  async function pay(p: Preset, amount: number) {
     setBusy(true);
+    setLastAmount(amount);
     try {
-      if (p.rushed) FraudSdk.session().event(BusinessEvent.payeeAdded('demo-payee-' + Date.now()));
+      const payeeRef = p.payee ?? 'demo-payee-' + Date.now();
+
+      // Vélocité (vidage de compte) : une rafale de virements rapides. Chacun
+      // émet un BIZ_TXN_INITIATED, donc le compteur TXN_VELOCITY du serveur
+      // grimpe et le verdict passe ALLOW → STEP-UP → HOLD. On s'arrête dès le
+      // blocage — les premiers passent (le solde baisse), le drain est stoppé.
+      if (p.burst) {
+        let last: Decision = {};
+        for (let i = 0; i < p.burst; i++) {
+          setProgress(`Virement ${i + 1}/${p.burst}…`);
+          FraudSdk.session().event(BusinessEvent.txnInitiated({
+            amountBucket: amount >= 50000 ? 'HIGH' : 'MID', currency: 'XOF', payeeIsNew: false, channel: 'BANK_TRANSFER',
+          }));
+          await FraudSdk.flush();
+          const token = await FraudSdk.session().getToken();
+          last = await scorePayment(token, amount, false, payeeRef);
+          if (last.decision === 'ALLOW') setBalance((b) => b - amount);
+          if (last.decision === 'HOLD') break;
+        }
+        setVerdict(last);
+        setScreen('outcome');
+        return;
+      }
+
+      if (p.rushed) FraudSdk.session().event(BusinessEvent.payeeAdded(payeeRef));
       FraudSdk.session().event(BusinessEvent.txnInitiated({
-        amountBucket: p.amount >= 50000 ? 'HIGH' : 'MID', currency: 'XOF', payeeIsNew: p.newPayee, channel: 'BANK_TRANSFER',
+        amountBucket: amount >= 50000 ? 'HIGH' : 'MID', currency: 'XOF', payeeIsNew: p.newPayee, channel: 'BANK_TRANSFER',
       }));
       await FraudSdk.flush();
       const token = await FraudSdk.session().getToken();
-      const res = BACKEND
-        ? await fetch(`${BACKEND}/demo/pay`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token, amount: p.amount, payeeNew: p.newPayee }),
-          })
-        : await fetch(`${COLLECTOR}/v1/score`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              sessionToken: token,
-              transaction: {
-                txnRef: 'DEMO-' + Date.now(), amount: p.amount, currency: 'XOF',
-                payeeIsNew: p.newPayee, channel: 'BANK_TRANSFER',
-              },
-            }),
-          });
-      const d: Decision = await res.json();
+      // Escalade : les demandes antérieures, plus petites, au même bénéficiaire —
+      // évaluées d'abord pour que l'historique par bénéficiaire porte le motif
+      // ascendant que la demande finale vient compléter.
+      for (const prior of p.story ?? []) {
+        const past = await scorePayment(token, prior, false, payeeRef);
+        if (past.decision === 'ALLOW') setBalance((b) => b - prior);
+      }
+      const d = await scorePayment(token, amount, p.newPayee, payeeRef);
       setVerdict(d);
-      if (d.decision === 'ALLOW') setBalance((b) => b - p.amount);
+      if (d.decision === 'ALLOW') setBalance((b) => b - amount);
       setScreen('outcome');
     } catch (e) {
-      setVerdict({ decision: undefined, signals: [{ weight: 0, label: 'Network error', evidence: String(e) }] });
+      setVerdict({ decision: undefined, signals: [{ weight: 0, label: 'Erreur réseau', evidence: String(e) }] });
       setScreen('outcome');
     } finally {
       setBusy(false);
+      setProgress('');
     }
   }
 
@@ -135,10 +204,12 @@ export default function App() {
     return (
       <View style={[styles.app, styles.center]}>
         <ActivityIndicator color={C.brand} />
-        <Text style={styles.muted}>Starting Verawall SDK…</Text>
+        <Text style={styles.muted}>Démarrage du SDK Verawall…</Text>
       </View>
     );
   }
+
+  const amount = Number(amountStr) || pick.amount;
 
   return (
     <View style={styles.app} {...(touch.panHandlers as object)}>
@@ -147,18 +218,18 @@ export default function App() {
         <View style={styles.topbar}>
           <View style={styles.logo}><Text style={styles.logoTxt}>DB</Text></View>
           <Text style={styles.brand}>Demo Bank</Text>
-          {screen !== 'login' && <Text style={styles.who}>{DEMO_EMAIL}</Text>}
+          {screen !== 'login' && <Text style={styles.who}>{PERSONA.name}</Text>}
         </View>
 
         {riskReasons.includes('SCREEN_SHARE') && (
           <View style={styles.scam}>
             <Text style={styles.scamIcon}>🛡️</Text>
             <View style={{ flex: 1 }}>
-              <Text style={styles.scamHead}>Screen sharing detected on this device</Text>
+              <Text style={styles.scamHead}>Partage d’écran détecté sur cet appareil</Text>
               <Text style={styles.scamSub}>
-                If someone phoned you and asked to install an app like AnyDesk or TeamViewer, or is watching your
-                screen right now — hang up. Demo Bank will never ask you to share your screen or move money to a
-                “safe account”.
+                Si quelqu’un vous a appelé pour installer une application comme AnyDesk ou TeamViewer, ou regarde
+                votre écran en ce moment — raccrochez. Demo Bank ne vous demandera jamais de partager votre écran
+                ni de transférer de l’argent vers un « compte sécurisé ».
               </Text>
             </View>
           </View>
@@ -167,10 +238,10 @@ export default function App() {
           <View style={styles.scam}>
             <Text style={styles.scamIcon}>📵</Text>
             <View style={{ flex: 1 }}>
-              <Text style={styles.scamHead}>You’re on a call right now</Text>
+              <Text style={styles.scamHead}>Vous êtes en communication</Text>
               <Text style={styles.scamSub}>
-                No one from Demo Bank is on this call. Bank staff never stay on the line while you send money —
-                if the caller is guiding you through a transfer, hang up now.
+                Personne de Demo Bank n’est en ligne avec vous. Nos agents ne restent jamais au téléphone pendant
+                un envoi d’argent — si l’appelant vous guide pour effectuer un virement, raccrochez maintenant.
               </Text>
             </View>
           </View>
@@ -178,11 +249,11 @@ export default function App() {
 
         {screen === 'login' && (
           <Card>
-            <Text style={styles.h2}>Sign in</Text>
-            <Text style={styles.sub}>Demo customer — credentials are pre-filled.</Text>
-            <Text style={styles.label}>Email</Text>
-            <TextInput style={styles.input} value={DEMO_EMAIL} editable={false} />
-            <Text style={styles.label}>PIN</Text>
+            <Text style={styles.h2}>Se connecter</Text>
+            <Text style={styles.sub}>Client de démonstration — identifiants pré-remplis.</Text>
+            <Text style={styles.label}>Téléphone</Text>
+            <TextInput style={styles.input} value={PERSONA.phone} editable={false} />
+            <Text style={styles.label}>Code PIN</Text>
             <TextInput
               style={styles.input}
               value={pin}
@@ -192,20 +263,20 @@ export default function App() {
               secureTextEntry
               keyboardType="number-pad"
             />
-            <Btn label="Sign in" onPress={login} />
+            <Btn label="Se connecter" onPress={login} />
           </Card>
         )}
 
         {screen === 'dashboard' && (
           <>
             <Card>
-              <Text style={styles.sub}>Current account · CZ89 •• 4412</Text>
+              <Text style={styles.sub}>Compte Mobile Money · {PERSONA.phone}</Text>
               <Text style={styles.balance}>{fmt(balance)} <Text style={styles.balanceCcy}>FCFA</Text></Text>
-              <Btn label="New transfer" onPress={() => { FraudSdk.session().screenView('transfer'); setScreen('transfer'); }} />
+              <Btn label="Nouveau virement" onPress={() => { FraudSdk.session().screenView('transfer'); setScreen('transfer'); }} />
             </Card>
             <Card>
-              <Text style={styles.h3}>Recent activity</Text>
-              {[['Employer s.r.o. — salary', '+62,000'], ['ČEZ — utilities', '−1,240'], ['Rohlík.cz — groceries', '−2,180']].map(([a, b]) => (
+              <Text style={styles.h3}>Activité récente</Text>
+              {[['Salaire — SITAB SA', '+120 000'], ['CIE — facture électricité', '−8 400'], ['Recharge Orange', '−2 000']].map(([a, b]) => (
                 <View key={a} style={styles.row}><Text style={styles.rowL}>{a}</Text><Text style={styles.rowR}>{b}</Text></View>
               ))}
             </Card>
@@ -214,26 +285,34 @@ export default function App() {
 
         {screen === 'transfer' && (
           <Card>
-            <Text style={styles.h2}>Send money</Text>
-            <Text style={styles.sub}>Pick a scenario — Verawall scores the session in real time.</Text>
+            <Text style={styles.h2}>Envoyer de l’argent</Text>
+            <Text style={styles.sub}>Choisissez un scénario — Verawall évalue la session en temps réel.</Text>
             {PRESETS.map((p) => (
-              <Pressable key={p.id} onPress={() => setPick(p)} style={[styles.preset, pick.id === p.id && styles.presetSel]}>
-                <Text style={styles.presetTitle}>{p.title}</Text>
+              <Pressable key={p.id} onPress={() => choose(p)} style={[styles.preset, pick.id === p.id && styles.presetSel]}>
+                <View style={styles.presetHead}>
+                  <Text style={styles.presetTitle}>{p.title}</Text>
+                  <View style={[styles.threat, { backgroundColor: toneBg[p.tone] }]}>
+                    <Text style={[styles.threatTxt, { color: toneColor[p.tone] }]}>{p.threat}</Text>
+                  </View>
+                </View>
                 <Text style={styles.presetSub}>{p.sub}</Text>
               </Pressable>
             ))}
-            {pick.amount > balance && (
-              <Text style={[styles.sub, { color: C.stop, fontWeight: '700' }]}>
-                Insufficient balance — you have {fmt(balance)} FCFA.
+            <Text style={styles.label}>Montant (FCFA)</Text>
+            <TextInput style={styles.input} value={amountStr} onChangeText={setAmountStr}
+              keyboardType="number-pad" placeholder="0" />
+            {amount > balance && (
+              <Text style={[styles.sub, { color: C.stop, fontWeight: '700', marginTop: 8 }]}>
+                Solde insuffisant — vous avez {fmt(balance)} FCFA.
               </Text>
             )}
-            <Btn label={busy ? 'Checking…' : `Send ${fmt(pick.amount)} FCFA`}
-              onPress={() => pay(pick)} disabled={busy || pick.amount > balance} />
-            <Btn label="Cancel" ghost onPress={() => setScreen('dashboard')} />
+            <Btn label={busy ? (progress || 'Vérification…') : `Envoyer ${fmt(amount)} FCFA`}
+              onPress={() => pay(pick, amount)} disabled={busy || amount > balance || amount <= 0} />
+            <Btn label="Annuler" ghost onPress={() => setScreen('dashboard')} />
           </Card>
         )}
 
-        {screen === 'outcome' && verdict && <Outcome d={verdict} amount={pick.amount} onDone={() => setScreen('dashboard')} onBalance={(amt) => setBalance((b) => b - amt)} />}
+        {screen === 'outcome' && verdict && <Outcome d={verdict} amount={lastAmount} onDone={() => setScreen('dashboard')} onBalance={(amt) => setBalance((b) => b - amt)} />}
 
         <VerawallPanel verdict={verdict} shareSim={shareSim} onToggleShare={toggleShare}
           callSim={callSim} onToggleCall={toggleCall}
@@ -251,9 +330,9 @@ function Outcome({ d, amount, onDone, onBalance }: { d: Decision; amount: number
     return (
       <Card center>
         <Badge color={C.ok} icon="✓" />
-        <Text style={styles.h2}>Payment sent</Text>
+        <Text style={styles.h2}>Paiement envoyé</Text>
         <Text style={styles.sub}>{done}</Text>
-        <Btn label="Back to account" ghost onPress={onDone} />
+        <Btn label="Retour au compte" ghost onPress={onDone} />
       </Card>
     );
   }
@@ -261,40 +340,40 @@ function Outcome({ d, amount, onDone, onBalance }: { d: Decision; amount: number
     return (
       <Card center>
         <Badge color={C.ok} icon="✓" />
-        <Text style={styles.h2}>Payment sent</Text>
-        <Text style={styles.sub}>On its way. No extra checks needed.</Text>
-        <Btn label="Back to account" ghost onPress={onDone} />
+        <Text style={styles.h2}>Paiement envoyé</Text>
+        <Text style={styles.sub}>En cours d’envoi. Aucune vérification supplémentaire.</Text>
+        <Btn label="Retour au compte" ghost onPress={onDone} />
       </Card>
     );
   }
   if (d.decision === 'STEP_UP') {
-    // APP-scam step-up: an identity challenge is useless — the victim IS the
-    // account holder and passes it. Show anti-scam friction instead: warn
-    // about coaching and require an explicit acknowledgement.
+    // Step-up « arnaque APP » : un défi d'identité est inutile — la victime EST le
+    // titulaire et le réussit. On montre plutôt une friction anti-arnaque :
+    // avertir du coaching et exiger un acquittement explicite.
     if (d.intervention === 'SCAM_WARNING') {
       return (
         <Card center>
           <Badge color={C.warn} icon="📵" />
-          <Text style={styles.h2}>Is someone helping you with this?</Text>
+          <Text style={styles.h2}>Quelqu’un vous aide-t-il pour ce paiement ?</Text>
           <Text style={styles.sub}>
-            This transfer matches how scam payments happen — a caller guiding you to send money to a
-            "safe account". No one from Demo Bank will ever ask you to do that. If you were told to make
-            this payment, stop now.
+            Ce virement correspond au schéma des paiements frauduleux — un appelant qui vous guide pour envoyer
+            de l’argent vers un « compte sécurisé ». Personne de Demo Bank ne vous demandera jamais cela. Si on
+            vous a demandé de faire ce paiement, arrêtez maintenant.
           </Text>
-          <Btn label="Cancel — this doesn't feel right" onPress={onDone} />
-          <Btn label="No one told me to do this — continue" ghost
-            onPress={() => { onBalance(amount); setDone('Payment sent after scam-warning acknowledgement.'); }} />
+          <Btn label="Annuler — ça ne me semble pas normal" onPress={onDone} />
+          <Btn label="Personne ne me l’a demandé — continuer" ghost
+            onPress={() => { onBalance(amount); setDone('Paiement envoyé après acquittement de l’avertissement.'); }} />
         </Card>
       );
     }
     return (
       <Card center>
         <Badge color={C.warn} icon="↑" />
-        <Text style={styles.h2}>Extra verification needed</Text>
-        <Text style={styles.sub}>This transfer looks unusual — enter a one-time code.</Text>
+        <Text style={styles.h2}>Vérification supplémentaire requise</Text>
+        <Text style={styles.sub}>Ce virement semble inhabituel — saisissez un code à usage unique.</Text>
         <TextInput style={[styles.input, styles.otp]} value={otp} onChangeText={setOtp} placeholder="••••••" keyboardType="number-pad" maxLength={6} />
-        <Btn label="Verify & send" onPress={() => { onBalance(amount); setDone('Verified — the payment is on its way.'); }} />
-        <Btn label="Back to account" ghost onPress={onDone} />
+        <Btn label="Vérifier et envoyer" onPress={() => { onBalance(amount); setDone('Vérifié — le paiement est en cours d’envoi.'); }} />
+        <Btn label="Retour au compte" ghost onPress={onDone} />
       </Card>
     );
   }
@@ -302,18 +381,18 @@ function Outcome({ d, amount, onDone, onBalance }: { d: Decision; amount: number
     return (
       <Card center>
         <Badge color={C.stop} icon="!" />
-        <Text style={styles.h2}>Payment held for review</Text>
-        <Text style={styles.sub}>Paused for a security review — no money has left your account.</Text>
-        <Btn label="Back to account" ghost onPress={onDone} />
+        <Text style={styles.h2}>Paiement mis en attente</Text>
+        <Text style={styles.sub}>Suspendu pour contrôle de sécurité — aucun montant n’a quitté votre compte.</Text>
+        <Btn label="Retour au compte" ghost onPress={onDone} />
       </Card>
     );
   }
   return (
     <Card center>
       <Badge color={C.stop} icon="!" />
-      <Text style={styles.h2}>Couldn’t reach the bank</Text>
-      <Text style={styles.sub}>Check the backend is running and reachable.</Text>
-      <Btn label="Back" ghost onPress={onDone} />
+      <Text style={styles.h2}>Impossible de joindre la banque</Text>
+      <Text style={styles.sub}>Vérifiez que le serveur est démarré et accessible.</Text>
+      <Btn label="Retour" ghost onPress={onDone} />
     </Card>
   );
 }
@@ -331,21 +410,27 @@ function VerawallPanel({ verdict, shareSim, onToggleShare, callSim, onToggleCall
         <View style={styles.vwDot}><Text style={styles.vwDotTxt}>V</Text></View>
         <View>
           <Text style={styles.vwTitle}>Verawall</Text>
-          <Text style={styles.vwTag}>BEHAVIORAL INTELLIGENCE</Text>
+          <Text style={styles.vwTag}>INTELLIGENCE COMPORTEMENTALE</Text>
         </View>
       </View>
-      {!band && <Text style={styles.muted}>Session bound. Touch, keystroke and device signals are captured — timing only, never content.</Text>}
+      {!band && <Text style={styles.muted}>Session liée. Signaux tactiles, de frappe et appareil capturés — horodatage uniquement, jamais le contenu.</Text>}
       {band && (
         <>
-          <Text style={styles.muted}>The bank's backend called /v1/score with the session token. Verdict:</Text>
+          <Text style={styles.muted}>Le backend de la banque a appelé /v1/score avec le jeton de session. Verdict :</Text>
           <View style={styles.vwVerdict}>
-            <View style={[styles.pill, { backgroundColor: bandBg[band], }]}>
+            <View style={[styles.pill, { backgroundColor: bandBg[band] }]}>
               <Text style={[styles.pillTxt, { color: bandColor[band] }]}>{band.replace('_', ' ')}</Text>
             </View>
             <Text style={[styles.score, { color: bandColor[band] }]}>{verdict?.riskScore}</Text>
           </View>
           {verdict?.threatType ? (
-            <Text style={styles.muted}>Classification: <Text style={styles.b}>{verdict.threatType}</Text>{verdict.alertId ? ` · alert ${verdict.alertId}` : ''}</Text>
+            <Text style={styles.muted}>Classification : <Text style={styles.b}>{verdict.threatType}</Text>{verdict.alertId ? ` · alerte ${verdict.alertId}` : ''}</Text>
+          ) : null}
+          {verdict?.intervention ? (
+            <View style={styles.reco}>
+              <Text style={styles.recoLabel}>ACTION RECOMMANDÉE</Text>
+              <Text style={styles.recoTxt}>{INTERVENTION_FR[verdict.intervention]}</Text>
+            </View>
           ) : null}
           {(verdict?.signals ?? []).map((s, i) => (
             <View key={i} style={styles.sig}>
@@ -359,25 +444,26 @@ function VerawallPanel({ verdict, shareSim, onToggleShare, callSim, onToggleCall
         </>
       )}
       <View style={styles.demoCtl}>
+        <Text style={styles.ctlHead}>SIGNAUX APPAREIL (DÉMO)</Text>
         <View style={styles.ctlRow}>
-          <Text style={styles.ctlLabel}>Simulate screen-share</Text>
+          <Text style={styles.ctlLabel}>Simuler le partage d’écran</Text>
           <Switch value={shareSim} onValueChange={onToggleShare} />
         </View>
         <View style={styles.ctlRow}>
-          <Text style={styles.ctlLabel}>Simulate active call</Text>
+          <Text style={styles.ctlLabel}>Simuler un appel en cours</Text>
           <Switch value={callSim} onValueChange={onToggleCall} />
         </View>
         <View style={styles.ctlRow}>
-          <Text style={styles.ctlLabel}>Prevent screenshots</Text>
+          <Text style={styles.ctlLabel}>Bloquer les captures d’écran</Text>
           <Switch value={preventShots} onValueChange={onTogglePreventShots} />
         </View>
-        <Text style={styles.hint}>Screen-share / call stand in for the native modules (Expo Go can't run native
-          code; the simulator can't place calls). "Prevent screenshots" blocks capture on this screen for real
-          via expo-screen-capture — try screenshotting with it on vs. off.</Text>
+        <Text style={styles.hint}>Le partage d’écran et l’appel remplacent les modules natifs (Expo Go n’exécute
+          pas de code natif ; le simulateur ne passe pas d’appels). « Bloquer les captures d’écran » empêche
+          réellement la capture sur cet écran via expo-screen-capture — essayez une capture activé/désactivé.</Text>
         {shotSeen && (
           <Text style={[styles.hint, { color: C.stop, fontWeight: '700' }]}>
-            Screenshot detected — PASSIVE_SCREENSHOT sent to Verawall. Under coaching, never share screenshots of
-            your account or codes.
+            Capture d’écran détectée — PASSIVE_SCREENSHOT envoyé à Verawall. Sous coaching, ne partagez jamais
+            de captures de votre compte ni de vos codes.
           </Text>
         )}
       </View>
@@ -385,7 +471,7 @@ function VerawallPanel({ verdict, shareSim, onToggleShare, callSim, onToggleCall
   );
 }
 
-// ---------- little building blocks ----------
+// ---------- briques d'UI ----------
 const Card = ({ children, center }: { children: React.ReactNode; center?: boolean }) => (
   <View style={[styles.card, center && styles.center]}>{children}</View>
 );
@@ -401,6 +487,8 @@ const Badge = ({ color, icon }: { color: string; icon: string }) => (
 const C = { ink: '#14202b', muted: '#62727f', line: '#e6ebf0', bg: '#eef1f5', brand: '#0a5bd3', brandInk: '#08419a', ok: '#1e9e5a', warn: '#c67c00', stop: '#d71a28', card: '#fff' };
 const bandColor: Record<string, string> = { ALLOW: C.ok, STEP_UP: C.warn, HOLD: C.stop };
 const bandBg: Record<string, string> = { ALLOW: '#eaf7f0', STEP_UP: '#fbf1e2', HOLD: '#fbeaec' };
+const toneColor: Record<Tone, string> = { ok: C.ok, warn: C.warn, stop: C.stop };
+const toneBg: Record<Tone, string> = { ok: '#eaf7f0', warn: '#fbf1e2', stop: '#fbeaec' };
 
 const styles = StyleSheet.create({
   app: { flex: 1, backgroundColor: C.bg },
@@ -432,7 +520,11 @@ const styles = StyleSheet.create({
 
   preset: { borderWidth: 1, borderColor: C.line, borderRadius: 8, backgroundColor: '#fbfcfd', padding: 12, marginTop: 8 },
   presetSel: { borderColor: C.brand, backgroundColor: '#f2f7ff' },
-  presetTitle: { fontWeight: '700', fontSize: 14, color: C.ink }, presetSub: { fontSize: 12.5, color: C.muted, marginTop: 2 },
+  presetHead: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
+  presetTitle: { fontWeight: '700', fontSize: 14, color: C.ink, flex: 1 },
+  presetSub: { fontSize: 12.5, color: C.muted, marginTop: 2 },
+  threat: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 },
+  threatTxt: { fontSize: 10.5, fontWeight: '800' },
 
   btn: { marginTop: 14, padding: 13, borderRadius: 8, backgroundColor: C.brand, alignItems: 'center', alignSelf: 'stretch' },
   btnGhost: { backgroundColor: '#fff', borderWidth: 1, borderColor: C.line },
@@ -449,11 +541,15 @@ const styles = StyleSheet.create({
   vwVerdict: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: 6 },
   pill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 }, pillTxt: { fontWeight: '800', fontSize: 13 },
   score: { fontWeight: '800', fontSize: 22 },
+  reco: { marginTop: 6, backgroundColor: '#f2f7ff', borderRadius: 8, padding: 10 },
+  recoLabel: { fontSize: 9.5, letterSpacing: 1, fontWeight: '800', color: C.brandInk },
+  recoTxt: { fontSize: 13, fontWeight: '600', color: C.ink, marginTop: 2 },
   sig: { flexDirection: 'row', gap: 8, paddingVertical: 8, borderTopWidth: 1, borderTopColor: C.line },
   sigW: { fontWeight: '800', color: C.stop, width: 32 }, sigLab: { color: C.ink, fontWeight: '600', fontSize: 13 }, sigEv: { color: C.muted, fontSize: 11.5, marginTop: 1 },
 
   demoCtl: { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: C.line, borderStyle: 'dashed' },
-  ctlRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  ctlHead: { fontSize: 9.5, letterSpacing: 1, fontWeight: '800', color: C.muted, marginBottom: 6 },
+  ctlRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 2 },
   ctlLabel: { fontSize: 13, fontWeight: '600', color: C.ink },
   hint: { fontSize: 10.5, color: C.muted, marginTop: 5 },
 

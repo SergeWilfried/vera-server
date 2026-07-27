@@ -1,0 +1,20 @@
+{
+  "cli": { "appVersionSource": "local" },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": { "buildType": "apk" }
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": { "buildType": "apk" },
+      "env": {
+        "EXPO_PUBLIC_COLLECTOR_URL": "https://vera-server-2d4q.onrender.com"
+      }
+    },
+    "production": {
+      "android": { "buildType": "app-bundle" }
+    }
+  }
+}

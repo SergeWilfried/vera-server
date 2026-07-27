@@ -11,13 +11,23 @@
       "resizeMode": "contain",
       "backgroundColor": "#0a5bd3"
     },
-    "assetBundlePatterns": ["**/*"],
-    "ios": { "bundleIdentifier": "com.veratools.demobank", "supportsTablet": true },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "bundleIdentifier": "com.veratools.demobank",
+      "supportsTablet": true
+    },
     "android": {
       "package": "com.veratools.demobank",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0a5bd3"
+      }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "6040f253-fb6d-4036-8fb8-35cb01e6e671"
       }
     }
   }
