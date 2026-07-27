@@ -364,20 +364,22 @@ func (s *Server) getScoringContext(ctx context.Context, tenantID, sessionID, use
 
 	var in72 float64
 	var lastIn *time.Time
-	var fan int
+	var fan, prior90d int
 	if err := s.pool.QueryRow(ctx,
 		`SELECT coalesce(sum(amount) FILTER (WHERE direction='IN'
 		          AND ts > now() - interval '72 hours'), 0)::float8,
 		        max(ts) FILTER (WHERE direction='IN'
 		          AND ts > now() - interval '72 hours'),
 		        count(DISTINCT counterparty_ref) FILTER (WHERE direction='OUT'
-		          AND ts > now() - interval '24 hours')::int
+		          AND ts > now() - interval '24 hours')::int,
+		        count(*) FILTER (WHERE ts < now() - interval '72 hours'
+		          AND ts > now() - interval '90 days')::int
 		 FROM bank_txns WHERE tenant_id=$1 AND user_ref=$2`,
-		tenantID, userRef).Scan(&in72, &lastIn, &fan); err != nil {
+		tenantID, userRef).Scan(&in72, &lastIn, &fan, &prior90d); err != nil {
 		return nil, err
 	}
 	sc.HasBankFlow = true
-	sc.FlowIn72, sc.FlowLastInAt, sc.FlowFan = in72, lastIn, fan
+	sc.FlowIn72, sc.FlowLastInAt, sc.FlowFan, sc.FlowPrior90d = in72, lastIn, fan, prior90d
 	return sc, nil
 }
 

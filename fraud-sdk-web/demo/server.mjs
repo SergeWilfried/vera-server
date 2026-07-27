@@ -119,11 +119,12 @@ const readJson = (req) => new Promise((resolve) => {
 
 const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/demo/pay') {
-    const { token, amount, payeeNew } = await readJson(req);
+    const { token, amount, payeeNew, payeeRef } = await readJson(req);
     if (!token) { res.writeHead(400); return res.end('{"error":"no session token"}'); }
     const decision = await sendScore(token, {
       txnRef: 'DEMO-' + crypto.randomUUID().slice(0, 8),
       amount: Number(amount) || 0, currency: 'CZK', payeeIsNew: !!payeeNew, channel: 'BANK_TRANSFER',
+      ...(payeeRef ? { payeeRef: String(payeeRef) } : {}),
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify(decision));

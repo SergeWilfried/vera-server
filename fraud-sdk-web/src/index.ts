@@ -11,7 +11,7 @@
 // identifiers should be hashed via FraudSdk.hash() before setUser.
 
 import type { SdkConfig, SdkEvent } from './types.js';
-import { getInstallId, randomId } from './session.js';
+import { getInstall, randomId } from './session.js';
 import { Transport } from './transport.js';
 import { fingerprint } from './collectors/fingerprint.js';
 import { attachMouse } from './collectors/mouse.js';
@@ -119,7 +119,8 @@ export const FraudSdk = {
       sdk: config.sdk ?? 'web/0.1.0',
       flushIntervalMs: config.flushIntervalMs ?? 5000,
     };
-    const installId = getInstallId();
+    const install = getInstall();
+    const installId = install.id;
     const sessionId = randomId();
     const transport = new Transport(cfg, installId);
     const fp = fingerprint();
@@ -128,7 +129,11 @@ export const FraudSdk = {
     transport.start();
 
     // Passive capture.
-    enqueue('PASSIVE_WEB_FINGERPRINT', fp);
+    enqueue('PASSIVE_WEB_FINGERPRINT', {
+      ...fp,
+      firstSeen: install.firstSeen,
+      installAgeMs: install.firstSeen != null ? Date.now() - install.firstSeen : null,
+    });
     const getUser = () => state?.userRef;
     state.detach.push(attachMouse(installId, sessionId, getUser, (e) => transport.enqueue(e)));
     state.detach.push(attachNav(installId, sessionId, getUser, (e) => transport.enqueue(e)));

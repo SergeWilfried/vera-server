@@ -19,7 +19,7 @@ import type { SdkConfig, SdkEvent, LocalRisk, CallSignals } from './types';
 import { Transport } from './wire/transport';
 import { RiskTracker } from './core/risk';
 import { newId, hash as sha256 } from './platform/crypto';
-import { getInstallId } from './platform/storage';
+import { getInstall } from './platform/storage';
 import { fingerprint } from './platform/device';
 import { keystrokeProps, type KeystrokeProps } from './collectors/keystroke';
 import { createTouchCapture, type TouchCapture } from './collectors/touch';
@@ -151,7 +151,8 @@ export const FraudSdk = {
       remoteAccessPollMs: config.remoteAccessPollMs ?? 4000,
       callPollMs: config.callPollMs ?? 4000,
     };
-    const installId = await getInstallId();
+    const install = await getInstall();
+    const installId = install.id;
     const transport = new Transport(cfg, installId, newId);
     const risk = new RiskTracker();
     const touch = createTouchCapture(enqueue);
@@ -164,7 +165,11 @@ export const FraudSdk = {
     state = { cfg, installId, sessionId: newId(), transport, risk, touch, watch, callWatch, shotWatch, appSub };
     transport.start();
 
-    enqueue('PASSIVE_DEVICE_FINGERPRINT', fingerprint());
+    enqueue('PASSIVE_DEVICE_FINGERPRINT', {
+      ...fingerprint(),
+      firstSeen: install.firstSeen,
+      installAgeMs: install.firstSeen != null ? Date.now() - install.firstSeen : null,
+    });
     const remoteNative = watch.start();     // false => no native module
     const callNative = callWatch.start();   // false => no native module
     const shotNative = shotWatch.start();   // false => expo-screen-capture absent

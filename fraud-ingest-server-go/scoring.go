@@ -94,6 +94,7 @@ type ScoringCtx struct {
 	FlowIn72          float64
 	FlowLastInAt      *time.Time
 	FlowFan           int
+	FlowPrior90d      int // account's bank-ledger activity in [72h, 90d) — 0 = new/dormant
 }
 
 // defaultHighAmount cutoff, used when no override is configured — a low bar
@@ -593,6 +594,27 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 		add("SIM_CHANGED", "SIM changed since last session", 15, "SDK SIM-swap flag")
 	}
 
+	// --- install novelty --------------------------------------------------
+	// The SDK stamps when its install was created (firstSeen). A brand-new
+	// install gives device/account novelty even when the engine has no ledger
+	// view — an external destination, or a new-device takeover. Mild on its own
+	// (fresh installs are normal); it stacks with amount / new-payee / mule
+	// signals. Absent or null age = unknown (legacy install) — never fires.
+	for _, e := range events {
+		if e.Type != "PASSIVE_WEB_FINGERPRINT" && e.Type != "PASSIVE_DEVICE_FINGERPRINT" {
+			continue
+		}
+		var fp struct {
+			InstallAgeMs *int64 `json:"installAgeMs"`
+		}
+		if json.Unmarshal(e.Payload, &fp) == nil && fp.InstallAgeMs != nil &&
+			*fp.InstallAgeMs >= 0 && *fp.InstallAgeMs < 24*3600*1000 {
+			add("NEW_INSTALL", "App install created within the last day", 15,
+				fmt.Sprintf("install age %d min", *fp.InstallAgeMs/60000))
+		}
+		break
+	}
+
 	// --- integrity --------------------------------------------------------
 	for _, e := range events {
 		if e.Type != "PASSIVE_APP_INTEGRITY" {
@@ -849,11 +871,15 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 	}
 
 	// --- bank-feed flow ---------------------------------------------------
-	if ctx.HasBankFlow && ctx.FlowIn72 > 0 && ctx.FlowLastInAt != nil {
+	// Gated on account novelty (no prior 90-day ledger activity): a mule forwards
+	// funds from a new/dormant account. On an established account, forwarding a
+	// recent inflow is normal — ungated this over-fires (validated on labelled
+	// ledger data; mirrors the account-flow RAPID_IN_OUT gate).
+	if ctx.HasBankFlow && ctx.FlowIn72 > 0 && ctx.FlowLastInAt != nil && ctx.FlowPrior90d == 0 {
 		sinceIn := time.Since(*ctx.FlowLastInAt)
 		if sinceIn < 24*time.Hour && txn.Amount >= 0.6*ctx.FlowIn72 {
-			add("RAPID_IN_OUT", "Outbound follows recent inbound transfer", 30,
-				fmt.Sprintf("%.0f out vs. %.0f received %d min ago",
+			add("RAPID_IN_OUT", "New account forwards a recent inbound transfer", 30,
+				fmt.Sprintf("%.0f out vs. %.0f received %d min ago, no prior 90-day activity",
 					txn.Amount, ctx.FlowIn72, int(sinceIn.Minutes())))
 		}
 	}

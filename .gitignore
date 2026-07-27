@@ -13,3 +13,4 @@ fraud-sdk-web/dist/
 
 # OS
 .DS_Store
+*.apk
