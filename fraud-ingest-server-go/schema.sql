@@ -114,6 +114,9 @@ DELETE FROM decisions d USING decisions k
 CREATE UNIQUE INDEX IF NOT EXISTS decisions_idem_idx
   ON decisions (tenant_id, session_id, txn_ref) WHERE txn_ref IS NOT NULL;
 CREATE INDEX IF NOT EXISTS decisions_tenant_idx ON decisions (tenant_id, created_at);
+-- Per-payee amount history for ESCALATING_PAYEE (expression index on the txn JSON)
+CREATE INDEX IF NOT EXISTS decisions_payee_idx
+  ON decisions (tenant_id, user_ref, (txn->>'payeeRef'), created_at DESC);
 
 -- Bank-side transaction feed: the tenant's core banking pushes settled
 -- ledger movements (both directions), account/counterparty refs hashed.

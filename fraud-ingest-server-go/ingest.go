@@ -311,6 +311,15 @@ func (s *Server) handleScore(w http.ResponseWriter, r *http.Request) {
 	sc.VelocityThreshold = rr.velThreshold
 	sc.VelocityBase = rr.velBase
 	sc.VelocitySlope = rr.velSlope
+	if txn.PayeeRef != "" {
+		sc.PayeePriorAmounts, err = s.getPayeePriorAmounts(ctx,
+			payload.Tenant, payload.UserRef, txn.PayeeRef)
+		if err != nil {
+			log.Printf("getPayeePriorAmounts: %v", err)
+			writeJSON(w, 500, map[string]any{"error": "internal"})
+			return
+		}
+	}
 	result := scoreSession(sc, txn)
 
 	// Policy bands: 0–54 approve · 55–84 step-up · 85–100 hold for analyst

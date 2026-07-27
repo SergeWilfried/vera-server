@@ -902,6 +902,72 @@ const scenarios = {
     if (!ok) process.exitCode = 1;
   },
 
+  /** Cross-session payee escalation (Go server only): the chat-coached
+   *  romance/investment-scam signature — payments to the same payee rising
+   *  across sessions with NO call in progress. Two consecutive >1.3x rises
+   *  plus in-session coaching tells (paste, hesitation) must cross STEP_UP
+   *  with ESCALATING_PAYEE, classify as APP Scam, and route to SCAM_WARNING
+   *  (never an identity challenge — the victim would pass it). Controls: a
+   *  single rise is not a pattern, and a stable recurring payee stays ALLOW. */
+  async esc() {
+    const u = newUser();
+    await buildHistory(u, [30, 14, 2], [4000, 5000, 4500]);
+    const scamPayee = crypto.createHash('sha256')
+      .update('salt+payee+' + crypto.randomUUID()).digest('hex');
+
+    // A clean session shell: known device, usual location, no call.
+    const session = (t0, extraEvents = []) => {
+      const s = crypto.randomUUID();
+      return { sessionId: s, events: [
+        { type: 'PASSIVE_LOCATION_COARSE', sessionId: s, installId: u.install, ts: t0,
+          payload: { tier: 'GEOHASH5', geohash: u.geohash, ageMs: 30000 } },
+        { type: 'BIZ_LOGIN_RESULT', sessionId: s, installId: u.install, userRef: u.ref,
+          ts: t0 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+        { type: 'PASSIVE_TOUCH_STROKES', sessionId: s, installId: u.install, userRef: u.ref,
+          ts: t0 + 45000, payload: { strokes: strokes(10, u.dur, u.gap) } },
+        ...extraEvents.map(e => ({ ...e, sessionId: s, installId: u.install, userRef: u.ref })),
+        { type: 'BIZ_TXN_INITIATED', sessionId: s, installId: u.install, userRef: u.ref,
+          ts: t0 + 90000, callSignals: noCall,
+          payload: { amountBucket: 'LOW', currency: 'CZK', payeeIsNew: false, channel: 'P2P' } },
+      ] };
+    };
+    const pay = async (daysAgo, txn, extraEvents) => {
+      const h = session(Date.now() - daysAgo * DAY, extraEvents);
+      await sendBatch(u.install, h.events);
+      return sendScore(mintToken(h.sessionId, u.install, u.ref), txn);
+    };
+
+    // Control: recurring payee, stable amounts — never escalation.
+    await pay(9, { txnRef: 'ESC-RENT-1', amount: 4300, currency: 'CZK', payeeRef: 'PAYEE-RENT' });
+    await pay(5, { txnRef: 'ESC-RENT-2', amount: 4150, currency: 'CZK', payeeRef: 'PAYEE-RENT' });
+    report('esc: stable recurring payee', { decision: 'ALLOW' },
+      await pay(1, { txnRef: 'ESC-RENT-3', amount: 4200, currency: 'CZK', payeeRef: 'PAYEE-RENT' }));
+
+    // Scam: trust-building opener, then rising asks. One rise is no pattern.
+    await pay(6, { txnRef: 'ESC-SCAM-1', amount: 3000, currency: 'CZK',
+                   payeeIsNew: true, payeeRef: scamPayee });
+    report('esc: first rise alone', { decision: 'ALLOW' },
+      await pay(3, { txnRef: 'ESC-SCAM-2', amount: 5400, currency: 'CZK', payeeRef: scamPayee }));
+
+    // Second consecutive rise, victim following chat instructions: pasted
+    // details and >4s hesitation pauses while typing the amount.
+    const coachedKeys = [
+      { dt: -1, op: 'i' }, { dt: 250, op: 'i', paste: true }, { dt: 4600, op: 'i' },
+      { dt: 300, op: 'i' }, { dt: 4400, op: 'i' }, { dt: 280, op: 'i' },
+    ];
+    const got = await pay(0, { txnRef: 'ESC-SCAM-3', amount: 9800, currency: 'CZK', payeeRef: scamPayee },
+      [{ type: 'PASSIVE_KEYSTROKES', ts: Date.now() - 20000,
+         payload: { fieldId: 'transfer.amount', keys: coachedKeys } }]);
+    report('esc: second consecutive rise', { decision: 'STEP_UP', threatType: 'APP Scam' }, got);
+
+    const escFired = (got.signals || []).some(sg => sg.code === 'ESCALATING_PAYEE');
+    const scamWarning = got.intervention === 'SCAM_WARNING';
+    if (!escFired || !scamWarning) {
+      console.log(`  DETAIL escalation-fired=${escFired} intervention=${got.intervention}`);
+      process.exitCode = 1;
+    }
+  },
+
   /** Idempotent /v1/score (Go server only): a bank retrying the same txnRef
    *  in the same session must get the SAME decision and alert back — never
    *  a second open alert — while a different txnRef still scores fresh. */

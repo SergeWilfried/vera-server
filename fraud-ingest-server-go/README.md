@@ -25,6 +25,17 @@ pass unchanged, plus the Go-only `invite` scenario:
     node simulate-sdk.js keys   http://localhost:8080   # tenant key rotation (Go only)
     node simulate-sdk.js aml    http://localhost:8080   # AML file auto-open (Go only)
     node simulate-sdk.js graph  http://localhost:8080   # follow-the-money graph (Go only)
+    node simulate-sdk.js esc    http://localhost:8080   # cross-session payee escalation (Go only)
+
+The `esc` scenario proves the `ESCALATING_PAYEE` scoring signal: two
+consecutive rising payments (>1.3x each) to the same payee — the chat-coached
+romance/investment-scam signature, no call required — cross STEP_UP with the
+in-session coaching tells, classify as APP Scam, and route to `SCAM_WARNING`;
+a single rise and a stable recurring payee both stay ALLOW. The signal needs
+`payeeRef` (hashed, same contract as userRef) on the `/v1/score` transaction;
+history comes from the server's own decisions, so no extra tenant feed. The
+firing condition was benchmarked on labeled synthetic traffic (+8.6pp APP-scam
+recall for +0.1pp legit flagging).
 
 The `rat` scenario proves the `REMOTE_ACCESS` scoring signal: a known-device
 session with an active screen-share (`PASSIVE_REMOTE_ACCESS`) + scripted input

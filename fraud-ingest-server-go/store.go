@@ -381,6 +381,25 @@ func (s *Server) getScoringContext(ctx context.Context, tenantID, sessionID, use
 	return sc, nil
 }
 
+// getPayeePriorAmounts returns the user's prior scored amounts to one payee,
+// most recent first — the history behind ESCALATING_PAYEE. All decisions
+// count, not only ALLOW: a challenged middle payment that the (coached)
+// victim passed is still part of the escalation pattern.
+func (s *Server) getPayeePriorAmounts(ctx context.Context, tenantID, userRef, payeeRef string) ([]float64, error) {
+	if userRef == "" || payeeRef == "" {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT (txn->>'amount')::float8 FROM decisions
+		 WHERE tenant_id=$1 AND user_ref=$2 AND txn->>'payeeRef'=$3
+		   AND txn ? 'amount' AND created_at > now() - interval '90 days'
+		 ORDER BY created_at DESC LIMIT 10`, tenantID, userRef, payeeRef)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[float64])
+}
+
 // ---------- decisions & alerts ----------
 
 type DecisionRecord struct {
