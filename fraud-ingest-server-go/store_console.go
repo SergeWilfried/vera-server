@@ -1019,6 +1019,8 @@ func defaultSettings() map[string]any {
 			"dataRetention": "13 months", "platformVersion": "BIP 8.4.2",
 			"currency": "XOF", // primary operating currency (most tenants are single-currency)
 		},
+		// Default console language for this tenant; analysts can override per-user.
+		"language": "en",
 		"risk": map[string]any{
 			"highAmount": defaultHighAmountAny(),
 			"velocity": map[string]any{
