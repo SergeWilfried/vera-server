@@ -111,7 +111,9 @@ export default function App() {
   }
 
   async function login() {
-    FraudSdk.session().setUser(await FraudSdk.hash(DEMO_REF));
+    // Await it: resolves once a token bound to this user exists, so the first
+    // /v1/score after login sees the customer's profile (known device, history).
+    await FraudSdk.session().setUser(await FraudSdk.hash(DEMO_REF));
     FraudSdk.session().event(BusinessEvent.loginResult('SUCCESS'));
     FraudSdk.session().screenView('dashboard');
     setScreen('dashboard');

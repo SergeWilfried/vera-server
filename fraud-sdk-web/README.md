@@ -43,7 +43,8 @@ FraudSdk.init({
 });
 
 // After the user authenticates, tie the session to a HASHED identifier.
-FraudSdk.session().setUser(await FraudSdk.hash(userEmail));
+// Await it so the first score after login carries a user-bound token.
+await FraudSdk.session().setUser(await FraudSdk.hash(userEmail));
 
 // Opt-in per-field keystroke dynamics (timing only, never content).
 FraudSdk.captureKeystrokes(pinInput, 'login.pin');
@@ -88,16 +89,22 @@ records inter-key timing, never the characters typed.
 
 - `FraudSdk.init(config)` — call once on app start; idempotent.
 - `FraudSdk.session().setUser(hashedRef)` / `.clearUser()` — bind/rotate identity.
+  Both return a promise that resolves once a token for the new identity has been
+  minted (or the mint failed).
 - `FraudSdk.session().event(BusinessEvent.…)` — enqueue a `BIZ_*` event.
 - `FraudSdk.session().screenView(screenId)` — a `SCREEN_VIEWED`.
-- `FraudSdk.session().getToken()` — the minted session token (`X-Fraud-Session`).
+- `FraudSdk.session().getToken()` — a session token for the current identity
+  (`X-Fraud-Session`). Cached, but re-minted automatically before the server's
+  1h expiry and whenever the bound user changed, so a tab left open never hands
+  the bank a stale token. Resolves to `''` if the SDK isn't initialised or the
+  collector couldn't mint — pass `debug: true` to `init()` to log why.
 - `FraudSdk.captureKeystrokes(el, fieldId)` — opt-in keystroke dynamics.
 - `FraudSdk.flush()` — force-upload the queue (e.g. right before a `/score`).
 - `FraudSdk.onLocalRisk(cb)` — subscribe to locally-known risk (`{ level, reasons }`); fires immediately and on every change, so the host app can raise an anti-scam banner with no server round-trip.
 - `FraudSdk.reportRemoteAccess(active)` — a native/webview shell reports screen-share / remote-control it detected (e.g. an Android `VirtualDisplay` from AnyDesk); raises local risk **and** emits `PASSIVE_REMOTE_ACCESS` so the server scores `REMOTE_ACCESS`.
 - `FraudSdk.hash(value)` — SHA-256 hex for PII.
 
-`config`: `{ tenantId, siteKey, collectorUrl?, sdk?, flushIntervalMs? }`.
+`config`: `{ tenantId, siteKey, collectorUrl?, sdk?, flushIntervalMs?, debug? }`.
 
 ## Transport
 

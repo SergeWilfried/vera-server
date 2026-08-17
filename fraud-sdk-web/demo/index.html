@@ -194,7 +194,7 @@ function renderLogin() {
 
 async function login() {
   state.email = $('email').value.trim() || cfg.demoEmail;
-  FraudSdk.session().setUser(await FraudSdk.hash(state.email));
+  await FraudSdk.session().setUser(await FraudSdk.hash(state.email));
   FraudSdk.session().event(BusinessEvent.loginResult('SUCCESS'));
   FraudSdk.session().screenView('dashboard');
   vwCapturing();

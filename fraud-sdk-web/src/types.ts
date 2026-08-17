@@ -23,6 +23,8 @@ export interface SdkConfig {
   sdk?: string;
   /** Batch upload cadence (ms). */
   flushIntervalMs?: number;
+  /** Log integration problems (e.g. a failed token mint) to the console. */
+  debug?: boolean;
 }
 
 /** A behavioral "stroke" — shared shape for mouse and touch dynamics. */

@@ -46,6 +46,12 @@ interface State {
   sessionId: string;
   userRef?: string;
   token?: string;
+  /** userRef the current token was minted for (undefined = anonymous). */
+  tokenUserRef?: string;
+  /** Epoch ms the current token was minted; 0 = none. */
+  tokenMintedAt: number;
+  /** Coalesces concurrent mints into one request. */
+  tokenInflight?: Promise<void>;
   transport: Transport;
   risk: RiskTracker;
   touch: TouchCapture;
@@ -73,22 +79,68 @@ function enqueue(type: string, payload: unknown): void {
   state.transport.enqueue(ev);
 }
 
-async function refreshToken(): Promise<void> {
-  if (!state) return;
-  try {
-    const res = await fetch(state.cfg.collectorUrl.replace(/\/$/, '') + '/v1/collect/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Tenant-Id': state.cfg.tenantId,
-        'X-Site-Key': state.cfg.siteKey,
-      },
-      body: JSON.stringify({ sessionId: state.sessionId, installId: state.installId, userRef: state.userRef }),
-    });
-    if (res.ok) state.token = (await res.json()).token;
-  } catch {
-    /* token is best-effort; the bank backend can retry */
-  }
+// The server accepts a token for 1h from mint. Re-mint well before that so a
+// token handed to the bank backend never expires while its /score call is in
+// flight — a session left open past an hour would otherwise 401.
+const TOKEN_TTL_MS = 45 * 60 * 1000;
+
+/** True when the cached token is fresh AND was minted for the current user. */
+function tokenUsable(): boolean {
+  if (!state?.token) return false;
+  if (state.tokenUserRef !== state.userRef) return false;
+  return Date.now() - state.tokenMintedAt < TOKEN_TTL_MS;
+}
+
+// Mint a token for the current identity. Concurrent callers share one request;
+// the result is only cached when a mint succeeds, so a failure never clobbers
+// a still-valid token for the same user.
+function refreshToken(): Promise<void> {
+  if (!state) return Promise.resolve();
+  if (state.tokenInflight) return state.tokenInflight;
+  const s = state;
+  const userRef = s.userRef;
+  let done = false;
+  const p = (async () => {
+    try {
+      const res = await fetch(s.cfg.collectorUrl.replace(/\/$/, '') + '/v1/collect/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Tenant-Id': s.cfg.tenantId,
+          'X-Site-Key': s.cfg.siteKey,
+        },
+        body: JSON.stringify({ sessionId: s.sessionId, installId: s.installId, userRef }),
+      });
+      if (res.ok) {
+        const token = (await res.json())?.token;
+        if (typeof token === 'string' && token) {
+          s.token = token;
+          s.tokenUserRef = userRef;
+          s.tokenMintedAt = Date.now();
+          return;
+        }
+      }
+      if (__DEV__) console.warn(`[VeraFraudSdk] session token mint failed: HTTP ${res.status} (check tenantId / siteKey / collectorUrl)`);
+    } catch (e) {
+      if (__DEV__) console.warn('[VeraFraudSdk] session token mint failed:', e);
+    } finally {
+      done = true;
+      s.tokenInflight = undefined;
+    }
+  })();
+  // A synchronous throw path aside, the async body can't finish before this
+  // line — but guard anyway so a completed mint never leaves a stale handle.
+  if (!done) s.tokenInflight = p;
+  return p;
+}
+
+// Resolve to a usable token for the CURRENT identity, minting (at most twice —
+// the first attempt may be an in-flight mint for a previous userRef) when the
+// cache is empty, stale, or belongs to another user. '' if the collector
+// couldn't mint.
+async function ensureToken(): Promise<string> {
+  for (let i = 0; i < 2 && state && !tokenUsable(); i++) await refreshToken();
+  return state && tokenUsable() ? state.token! : '';
 }
 
 function applyRemoteAccess(active: boolean, status: RemoteAccessStatus): void {
@@ -113,16 +165,21 @@ function onScreenshot(): void {
 }
 
 const sessionApi = {
-  setUser(userRef: string): void {
-    if (!state) return;
+  /** Bind a (hashed) identity. Resolves once a token for this user has been
+   *  minted (or the mint failed) — await it before getToken() when you need
+   *  the very next score to see the user's profile; a token requested in the
+   *  meantime is re-minted for the new identity anyway. */
+  setUser(userRef: string): Promise<void> {
+    if (!state) return Promise.resolve();
     state.userRef = userRef;
-    void refreshToken();
+    return ensureToken().then(() => undefined);
   },
-  clearUser(): void {
-    if (!state) return;
+  /** Unbind on logout; rotates the session id. */
+  clearUser(): Promise<void> {
+    if (!state) return Promise.resolve();
     state.userRef = undefined;
     state.sessionId = newId();
-    void refreshToken();
+    return ensureToken().then(() => undefined);
   },
   event(e: BusinessEvent): void {
     enqueue(e.type, e.payload);
@@ -130,10 +187,11 @@ const sessionApi = {
   screenView(screenId: string): void {
     enqueue('SCREEN_VIEWED', { screenId });
   },
-  async getToken(): Promise<string> {
-    if (!state) return '';
-    if (!state.token) await refreshToken();
-    return state.token ?? '';
+  /** A session token for the current identity — fresh (re-minted before the
+   *  server's 1h expiry) and bound to the current userRef. '' if the SDK is
+   *  not initialised or the collector couldn't mint. */
+  getToken(): Promise<string> {
+    return ensureToken();
   },
 };
 
@@ -162,7 +220,7 @@ export const FraudSdk = {
     const appSub = AppState.addEventListener('change', (s: AppStateStatus) => {
       if (s === 'background' || s === 'inactive') void transport.flush();
     });
-    state = { cfg, installId, sessionId: newId(), transport, risk, touch, watch, callWatch, shotWatch, appSub };
+    state = { cfg, installId, sessionId: newId(), tokenMintedAt: 0, transport, risk, touch, watch, callWatch, shotWatch, appSub };
     transport.start();
 
     enqueue('PASSIVE_DEVICE_FINGERPRINT', {

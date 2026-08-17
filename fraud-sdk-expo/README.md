@@ -63,8 +63,9 @@ await FraudSdk.init({
   collectorUrl: 'https://collector.example.com',
 });
 
-// bind identity (hash PII first)
-FraudSdk.session().setUser(await FraudSdk.hash(userEmail));
+// bind identity (hash PII first) — await it so the first score after login
+// carries a token bound to this user (known device, amount history…)
+await FraudSdk.session().setUser(await FraudSdk.hash(userEmail));
 
 // keystroke timing on any field (timing only, never characters)
 <TextInput secureTextEntry {...FraudSdk.trackInput('login.pin')} />
@@ -130,8 +131,14 @@ FraudSdk.reportRemoteAccess(true); // → local banner + PASSIVE_REMOTE_ACCESS
 
 - `FraudSdk.init(config)` — **async**; call once on app start; idempotent.
 - `FraudSdk.session().setUser(hashedRef)` / `.clearUser()` — bind/rotate identity.
+  Both return a promise that resolves once a token for the new identity has been
+  minted (or the mint failed).
 - `FraudSdk.session().event(BusinessEvent.…)` / `.screenView(id)` — business events.
-- `FraudSdk.session().getToken()` — the minted session token.
+- `FraudSdk.session().getToken()` — a session token for the current identity.
+  Cached, but re-minted automatically before the server's 1h expiry and whenever
+  the bound user changed, so long-lived app sessions never hand the bank a stale
+  token. Resolves to `''` if the SDK isn't initialised or the collector couldn't
+  mint (logged in `__DEV__`).
 - `FraudSdk.trackInput(fieldId)` — props to spread onto a `<TextInput>`.
 - `FraudSdk.touch()` — `{ panHandlers, flush }` for a wrapping `<View>`.
 - `FraudSdk.onLocalRisk(cb)` — subscribe to local risk (screen-share); no server hop.
