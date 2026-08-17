@@ -88,10 +88,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		log.Printf("  %s%s", ev.Type, bits)
 	}
 
-	if err := s.recordBatch(ctx, tenantID, installID, events); err != nil {
+	stored, err := s.recordBatch(ctx, tenantID, installID, events)
+	if err != nil {
 		log.Printf("recordBatch: %v", err)
 		writeJSON(w, 500, map[string]any{"error": "internal"})
 		return
+	}
+	if dup := len(events) - stored; dup > 0 {
+		log.Printf("  ↻ %d duplicate event(s) dropped (resent batch)", dup)
 	}
 
 	// Device leg of the action channel: hand pending terminate commands
@@ -127,7 +131,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if err := s.markDeviceDelivered(ctx, ids); err != nil {
 		log.Printf("markDeviceDelivered: %v", err)
 	}
-	writeJSON(w, 200, map[string]any{"accepted": len(events), "commands": out})
+	// accepted = events stored; duplicates = resent events already on file
+	// (same contract as /v1/transactions).
+	writeJSON(w, 200, map[string]any{
+		"accepted": stored, "duplicates": len(events) - stored, "commands": out})
 }
 
 // ---------- POST /v1/transactions ----------
@@ -335,7 +342,7 @@ func (s *Server) handleScore(w http.ResponseWriter, r *http.Request) {
 		TenantID: payload.Tenant, SessionID: payload.SessionID,
 		InstallID: payload.InstallID, UserRef: payload.UserRef,
 		TxnRef: txn.TxnRef, Txn: body.Transaction,
-		Decision: decision, Result: result})
+		Decision: decision, Intervention: intervention, Result: result})
 	if err == ErrDuplicateDecision {
 		// Concurrent retry won the insert race — serve its stored decision.
 		prior, perr := s.getDecisionReplay(ctx, payload.Tenant, payload.SessionID, txn.TxnRef)
@@ -408,13 +415,14 @@ func (s *Server) writeScoreReplay(w http.ResponseWriter, payload *TokenPayload,
 		userOut = payload.UserRef
 	}
 	writeJSON(w, 200, map[string]any{
-		"decision":   prior["decision"],
-		"riskScore":  prior["score"],
-		"reasons":    prior["reasons"],
-		"signals":    prior["signals"],
-		"threatType": prior["threat_type"],
-		"alertId":    prior["alert_id"],
-		"replay":     true,
+		"decision":     prior["decision"],
+		"riskScore":    prior["score"],
+		"reasons":      prior["reasons"],
+		"signals":      prior["signals"],
+		"threatType":   prior["threat_type"],
+		"intervention": prior["intervention"],
+		"alertId":      prior["alert_id"],
+		"replay":       true,
 		"session": map[string]any{
 			"tenantId": payload.Tenant, "sessionId": payload.SessionID,
 			"installId": payload.InstallID, "userRef": userOut,

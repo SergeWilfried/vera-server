@@ -132,10 +132,14 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 	log.Printf("⇢ collect tenant=%s sdk=%s install=%s events=%d",
 		tenantID, r.Header.Get("X-Sdk"), short(installID, 8), len(events))
 
-	if err := s.recordBatch(ctx, tenantID, installID, events); err != nil {
+	stored, err := s.recordBatch(ctx, tenantID, installID, events)
+	if err != nil {
 		log.Printf("collect recordBatch: %v", err)
 		writeJSON(w, 500, map[string]any{"error": "internal"})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"accepted": len(events)})
+	if dup := len(events) - stored; dup > 0 {
+		log.Printf("  ↻ %d duplicate event(s) dropped (resent batch)", dup)
+	}
+	writeJSON(w, 200, map[string]any{"accepted": stored, "duplicates": len(events) - stored})
 }

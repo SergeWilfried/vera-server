@@ -87,6 +87,13 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_session_idx ON events (tenant_id, session_id, ts);
 CREATE INDEX IF NOT EXISTS events_type_idx    ON events (tenant_id, type, ts);
 CREATE INDEX IF NOT EXISTS events_user_idx    ON events (tenant_id, user_ref, ts);
+-- SDK-stamped event id (uuid). SDKs re-send batches after a timeout / dropped
+-- connection, and duplicated BIZ_TXN_INITIATED rows would inflate velocity
+-- signals — so ingest dedupes on (tenant, event_id). Legacy rows without an
+-- id are left alone (partial index).
+ALTER TABLE events ADD COLUMN IF NOT EXISTS event_id text;
+CREATE UNIQUE INDEX IF NOT EXISTS events_event_id_idx
+  ON events (tenant_id, event_id) WHERE event_id IS NOT NULL;
 
 -- Every /v1/score call and its outcome (the decision audit trail).
 CREATE TABLE IF NOT EXISTS decisions (
@@ -105,6 +112,9 @@ CREATE TABLE IF NOT EXISTS decisions (
   created_at  timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE decisions ADD COLUMN IF NOT EXISTS threat_type text;
+-- Recommended intervention (SCAM_WARNING | IDENTITY | ANALYST_REVIEW), stored
+-- so an idempotent replay returns the exact fresh-response shape.
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS intervention text;
 -- /v1/score is idempotent per (tenant, session, txnRef): a bank retrying a
 -- timed-out call must get the SAME decision and alert back, never a second
 -- open alert. Pre-index cleanup keeps the earliest row (first decision wins).

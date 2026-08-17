@@ -213,10 +213,16 @@ simulator works out of the box.
   ranks and webhook/retry behavior mirror the Node server; consult its
   [README](../fraud-ingest-server/README.md) for the full API reference.
 - SDK event envelopes carry a client-generated `eventId` (additive,
-  optional). The server currently ignores it — event dedupe enforcement
-  is deferred until duplicate storage actually costs something — but
-  stamping now means deployed SDK fleets won't need a retrofit when a
-  unique index turns it on.
+  optional). Ingest (`/v1/events`, `/v1/collect`) dedupes on
+  `(tenant, eventId)` — a batch an SDK resends after a timeout or dropped
+  connection is dropped *before* session/device counters and per-session
+  scoring see it (a resent `BIZ_TXN_INITIATED` would otherwise inflate
+  `TXN_VELOCITY`). The batch response reports `accepted` (stored) and
+  `duplicates` (already on file), like `/v1/transactions`. Events without
+  an `eventId` (legacy SDKs) are always stored.
+- `/v1/score` replays return the exact fresh-response shape, including
+  `intervention` (stored on the decision; recomputed for rows that predate
+  the column).
 - Webhook delivery is a Postgres-backed outbox: the first attempt is
   synchronous (the console response carries real status); failures are
   scheduled in `actions.webhook_next_attempt_at` (5s·2^n jittered, cap 1h,

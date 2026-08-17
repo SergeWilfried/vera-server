@@ -15,6 +15,8 @@ import (
 )
 
 type IngestEvent struct {
+	// Client-generated unique id (uuid); optional. Dedupe key for resent batches.
+	EventID     string          `json:"eventId"`
 	Type        string          `json:"type"`
 	SessionID   string          `json:"sessionId"`
 	InstallID   string          `json:"installId"`
@@ -42,12 +44,26 @@ func queryMap(ctx context.Context, p *pgxpool.Pool, sql string, args ...any) (ma
 
 // ---------- ingest ----------
 
-func (s *Server) recordBatch(ctx context.Context, tenantID, batchInstallID string, events []IngestEvent) error {
+// recordBatch stores an SDK batch and returns how many events were NEW.
+// Events whose eventId is already stored for this tenant (an SDK resending a
+// batch after a timeout / dropped connection) are dropped before any
+// aggregate is touched, so session/device counters and per-session scoring
+// (TXN_VELOCITY counts BIZ_TXN_INITIATED rows) never see the resend.
+// Events without an eventId (legacy SDKs) are always stored.
+func (s *Server) recordBatch(ctx context.Context, tenantID, batchInstallID string, events []IngestEvent) (int, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer tx.Rollback(ctx)
+
+	events, err = dedupeEvents(ctx, tx, tenantID, events)
+	if err != nil {
+		return 0, err
+	}
+	if len(events) == 0 {
+		return 0, tx.Commit(ctx)
+	}
 
 	bySession := map[string][]IngestEvent{}
 	order := []string{}
@@ -105,7 +121,7 @@ func (s *Server) recordBatch(ctx context.Context, tenantID, batchInstallID strin
 				   last_seen = GREATEST(devices.last_seen, EXCLUDED.last_seen),
 				   fingerprint = COALESCE(EXCLUDED.fingerprint, devices.fingerprint)`,
 				tenantID, installID, first, last, jsonArg(fingerprint)); err != nil {
-				return err
+				return 0, err
 			}
 		}
 
@@ -124,7 +140,7 @@ func (s *Server) recordBatch(ctx context.Context, tenantID, batchInstallID strin
 			 RETURNING (xmax = 0) AS inserted`,
 			tenantID, sessionID, installID, userRef, first, last, len(evs), simChanged,
 		).Scan(&inserted); err != nil {
-			return err
+			return 0, err
 		}
 
 		if userRef != "" {
@@ -139,7 +155,7 @@ func (s *Server) recordBatch(ctx context.Context, tenantID, batchInstallID strin
 				   last_seen = GREATEST(app_users.last_seen, EXCLUDED.last_seen),
 				   session_count = app_users.session_count + EXCLUDED.session_count`,
 				tenantID, userRef, first, last, inc); err != nil {
-				return err
+				return 0, err
 			}
 			if installID != "" {
 				if _, err := tx.Exec(ctx,
@@ -150,7 +166,7 @@ func (s *Server) recordBatch(ctx context.Context, tenantID, batchInstallID strin
 					   last_seen = GREATEST(user_devices.last_seen, EXCLUDED.last_seen),
 					   session_count = user_devices.session_count + EXCLUDED.session_count`,
 					tenantID, userRef, installID, first, last, inc); err != nil {
-					return err
+					return 0, err
 				}
 			}
 		}
@@ -165,16 +181,62 @@ func (s *Server) recordBatch(ctx context.Context, tenantID, batchInstallID strin
 		if installID == "" {
 			installID = batchInstallID
 		}
+		// ON CONFLICT covers the race dedupeEvents can't: a concurrent resend
+		// committing the same eventId between our lookup and this insert.
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO events (tenant_id, session_id, install_id, user_ref,
-			                     type, ts, call_signals, payload)
-			 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6, $7, $8)`,
+			                     type, ts, call_signals, payload, event_id)
+			 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6, $7, $8, NULLIF($9, ''))
+			 ON CONFLICT (tenant_id, event_id) WHERE event_id IS NOT NULL DO NOTHING`,
 			tenantID, ev.SessionID, installID, ev.UserRef, typ,
-			msToTime(ev.Ts), jsonArg(ev.CallSignals), jsonArg(ev.Payload)); err != nil {
-			return err
+			msToTime(ev.Ts), jsonArg(ev.CallSignals), jsonArg(ev.Payload), ev.EventID); err != nil {
+			return 0, err
 		}
 	}
-	return tx.Commit(ctx)
+	return len(events), tx.Commit(ctx)
+}
+
+// dedupeEvents drops events whose eventId is already stored for the tenant,
+// plus repeats within the batch itself. Order is preserved. Events without
+// an eventId pass through untouched.
+func dedupeEvents(ctx context.Context, tx pgx.Tx, tenantID string, events []IngestEvent) ([]IngestEvent, error) {
+	ids := make([]string, 0, len(events))
+	seen := map[string]bool{}
+	for _, ev := range events {
+		if ev.EventID != "" && !seen[ev.EventID] {
+			seen[ev.EventID] = true
+			ids = append(ids, ev.EventID)
+		}
+	}
+	if len(ids) == 0 {
+		return events, nil
+	}
+	rows, err := tx.Query(ctx,
+		`SELECT event_id FROM events WHERE tenant_id=$1 AND event_id = ANY($2)`,
+		tenantID, ids)
+	if err != nil {
+		return nil, err
+	}
+	stored, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	known := make(map[string]bool, len(stored))
+	for _, id := range stored {
+		known[id] = true
+	}
+	out := make([]IngestEvent, 0, len(events))
+	inBatch := map[string]bool{}
+	for _, ev := range events {
+		if ev.EventID != "" {
+			if known[ev.EventID] || inBatch[ev.EventID] {
+				continue
+			}
+			inBatch[ev.EventID] = true
+		}
+		out = append(out, ev)
+	}
+	return out, nil
 }
 
 func (s *Server) pendingDeviceCommands(ctx context.Context, tenantID string, sessionIDs []string) ([]map[string]any, error) {
@@ -409,6 +471,7 @@ type DecisionRecord struct {
 	TxnRef                                  string
 	Txn                                     json.RawMessage
 	Decision                                string
+	Intervention                            string // "" when none (ALLOW)
 	Result                                  ScoreResult
 }
 
@@ -440,12 +503,13 @@ func (s *Server) recordDecision(ctx context.Context, d DecisionRecord) (string, 
 	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO decisions (tenant_id, session_id, user_ref, txn_ref, txn,
-		                        decision, score, reasons, signals, threat_type, alert_id)
+		                        decision, score, reasons, signals, threat_type, alert_id,
+		                        intervention)
 		 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), $5, $6, $7, $8, $9,
-		         NULLIF($10, ''), NULLIF($11, ''))`,
+		         NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''))`,
 		d.TenantID, d.SessionID, d.UserRef, d.TxnRef, jsonArg(d.Txn),
 		d.Decision, d.Result.Score, string(reasonsJSON), string(signalsJSON),
-		d.Result.ThreatType, alertID); err != nil {
+		d.Result.ThreatType, alertID, d.Intervention); err != nil {
 		// A concurrent retry beat us to the (tenant, session, txnRef) slot;
 		// the rollback also discards our duplicate alert. Caller replays.
 		var pgErr *pgconn.PgError
@@ -462,16 +526,26 @@ var ErrDuplicateDecision = errors.New("duplicate decision")
 
 // getDecisionReplay returns the stored decision for an idempotent /v1/score
 // replay, or nil when this txnRef hasn't been decided in this session.
+// Rows written before the intervention column existed get it recomputed from
+// (decision, threat_type) — the same mapping the fresh path uses.
 func (s *Server) getDecisionReplay(ctx context.Context, tenantID, sessionID, txnRef string) (map[string]any, error) {
 	rows, err := queryMaps(ctx, s.pool,
-		`SELECT decision, score, reasons, signals, threat_type, alert_id
+		`SELECT decision, score, reasons, signals, threat_type, alert_id, intervention
 		 FROM decisions
 		 WHERE tenant_id=$1 AND session_id=$2 AND txn_ref=$3
 		 ORDER BY id LIMIT 1`, tenantID, sessionID, txnRef)
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
-	return rows[0], nil
+	row := rows[0]
+	if row["intervention"] == nil {
+		decision, _ := row["decision"].(string)
+		threat, _ := row["threat_type"].(string)
+		if iv := interventionFor(decision, threat); iv != "" {
+			row["intervention"] = iv
+		}
+	}
+	return row, nil
 }
 
 // ---------- bank transaction feed ----------
