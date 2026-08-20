@@ -34,6 +34,7 @@ type Tenant struct {
 	Name           string
 	Webhook        string
 	SiteKey        string
+	AppKey         string // native-app credential for /v1/collect (X-App-Key)
 	AllowedOrigins []string
 	Keys           []TenantKey // active first
 }
@@ -95,6 +96,7 @@ func (s *Server) loadTenants(ctx context.Context) error {
 	rows, err := queryMaps(ctx, s.pool,
 		`SELECT id, name, coalesce(webhook_url,'') AS webhook_url,
 		        coalesce(site_key,'') AS site_key,
+		        coalesce(app_key,'') AS app_key,
 		        coalesce(allowed_origins,'') AS allowed_origins
 		 FROM tenants WHERE status='active'`)
 	if err != nil {
@@ -106,6 +108,7 @@ func (s *Server) loadTenants(ctx context.Context) error {
 		name, _ := r["name"].(string)
 		webhook, _ := r["webhook_url"].(string)
 		siteKey, _ := r["site_key"].(string)
+		appKey, _ := r["app_key"].(string)
 		originsCSV, _ := r["allowed_origins"].(string)
 		var origins []string
 		for _, o := range strings.Split(originsCSV, ",") {
@@ -114,7 +117,7 @@ func (s *Server) loadTenants(ctx context.Context) error {
 			}
 		}
 		out[id] = Tenant{ID: id, Name: name, Webhook: webhook,
-			SiteKey: siteKey, AllowedOrigins: origins}
+			SiteKey: siteKey, AppKey: appKey, AllowedOrigins: origins}
 	}
 
 	keyRows, err := queryMaps(ctx, s.pool,
@@ -229,15 +232,17 @@ func (s *Server) verifyTenantSig(tenantID string, body []byte, sigB64 string) bo
 // becomes key 'k1' only when the tenant has no keys at all.
 func (s *Server) seedTenant(ctx context.Context) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO tenants (id, name, webhook_url, site_key, allowed_origins)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO tenants (id, name, webhook_url, site_key, app_key, allowed_origins)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 ON CONFLICT (id) DO UPDATE SET
 		   webhook_url     = COALESCE(tenants.webhook_url, EXCLUDED.webhook_url),
 		   site_key        = COALESCE(tenants.site_key, EXCLUDED.site_key),
+		   app_key         = COALESCE(tenants.app_key, EXCLUDED.app_key),
 		   allowed_origins = COALESCE(tenants.allowed_origins, EXCLUDED.allowed_origins)`,
 		"wallet-acme", "Wallet Acme (dev)",
 		env("CORE_WEBHOOK", "http://localhost:8090/core-banking/hooks"),
 		env("SITE_KEY", "site_wallet-acme_pub"),
+		env("APP_KEY", "app_wallet-acme_native"),
 		env("SITE_ORIGINS", "http://localhost:5199,http://localhost:5173,http://localhost:8099"))
 	if err != nil {
 		return err
@@ -270,7 +275,7 @@ func (s *Server) seedTenant(ctx context.Context) error {
 func runTenantCLI(pool *pgxpool.Pool, args []string) error {
 	ctx := context.Background()
 	if len(args) == 0 {
-		return fmt.Errorf("usage: tenant <create|list|rotate-key|revoke-key> …")
+		return fmt.Errorf("usage: tenant <create|list|rotate-key|revoke-key|rotate-app-key> …")
 	}
 	newKeyHex := func() string {
 		b := make([]byte, 16)
@@ -298,10 +303,11 @@ func runTenantCLI(pool *pgxpool.Pool, args []string) error {
 		webhook := get(3, "http://localhost:8090/core-banking/hooks")
 		siteKey := get(4, "site_"+id+"_pub")
 		origins := get(5, "")
+		appKey := "app_" + id + "_" + newKeyHex()[:12]
 		if _, err := pool.Exec(ctx,
-			`INSERT INTO tenants (id, name, webhook_url, site_key, allowed_origins)
-			 VALUES ($1, $2, $3, $4, NULLIF($5, ''))`,
-			id, name, webhook, siteKey, origins); err != nil {
+			`INSERT INTO tenants (id, name, webhook_url, site_key, app_key, allowed_origins)
+			 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))`,
+			id, name, webhook, siteKey, appKey, origins); err != nil {
 			return err
 		}
 		key := newKeyHex()
@@ -315,8 +321,8 @@ func runTenantCLI(pool *pgxpool.Pool, args []string) error {
 			 VALUES ($1, $2, $3, 'active')`, id, kid, enc); err != nil {
 			return err
 		}
-		fmt.Printf("created tenant=%s siteKey=%s\nkid=%s key=%s\n(store the key now — it is not shown again)\n",
-			id, siteKey, kid, key)
+		fmt.Printf("created tenant=%s siteKey=%s appKey=%s\nkid=%s key=%s\n(store the HMAC key now — it is not shown again)\n",
+			id, siteKey, appKey, kid, key)
 	case "list":
 		rows, err := queryMaps(ctx, pool,
 			`SELECT t.id, t.status, coalesce(t.site_key,'') AS site_key,
@@ -353,6 +359,22 @@ func runTenantCLI(pool *pgxpool.Pool, args []string) error {
 		}
 		fmt.Printf("rotated tenant=%s\nkid=%s key=%s\n(previous active key is now 'retiring' — still verifies; revoke it once the fleet upgrades)\n",
 			id, kid, key)
+	case "rotate-app-key":
+		// The app key ships inside mobile binaries; rotating it cuts off
+		// clients still pinning the old one (fleets upgrade via app release).
+		if len(args) < 2 {
+			return fmt.Errorf("usage: tenant rotate-app-key <id>")
+		}
+		appKey := "app_" + args[1] + "_" + newKeyHex()[:12]
+		tag, err := pool.Exec(ctx,
+			`UPDATE tenants SET app_key=$2 WHERE id=$1`, args[1], appKey)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("no such tenant %s", args[1])
+		}
+		fmt.Printf("rotated tenant=%s appKey=%s\n", args[1], appKey)
 	case "revoke-key":
 		if len(args) < 3 {
 			return fmt.Errorf("usage: tenant revoke-key <id> <kid>")

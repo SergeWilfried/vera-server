@@ -1030,6 +1030,50 @@ const scenarios = {
     }
   },
 
+  /** Native-path auth (Go server only): requests WITHOUT a browser Origin
+   *  must present the per-tenant app key (X-App-Key). The public site key
+   *  alone no longer writes telemetry or mints tokens for arbitrary users —
+   *  that was the H1 ingest hole. Browser path (Origin + site key +
+   *  allowlist) is unchanged. */
+  async appkey() {
+    const APP_KEY = process.env.APP_KEY || 'app_wallet-acme_native';
+    const sid = crypto.randomUUID(), install = crypto.randomUUID();
+    const ev = [{ eventId: crypto.randomUUID(), type: 'SCREEN_VIEWED', sessionId: sid,
+      installId: install, ts: Date.now(), payload: { screenId: 'home' } }];
+    const post = (path, headers, body) => fetch(BASE + path, {
+      method: 'POST', headers, body,
+    }).then(r => r.status);
+
+    const nd = (evs) => evs.map(e => JSON.stringify(e)).join('\n');
+    const baseH = { 'Content-Type': 'application/x-ndjson', 'X-Tenant-Id': TENANT,
+                    'X-Install-Id': install, 'X-Sdk': 'android/0.3.0' };
+
+    // (a) no Origin, public site key only -> rejected (the closed hole)
+    const holeClosed = await post('/v1/collect',
+      { ...baseH, 'X-Site-Key': SITE_KEY }, nd(ev)) === 401;
+    // (b) no Origin, wrong app key -> rejected
+    const wrongRejected = await post('/v1/collect',
+      { ...baseH, 'X-App-Key': 'app_wallet-acme_WRONG' }, nd(ev)) === 401;
+    // (c) no Origin, correct app key -> accepted
+    const nativeOk = await post('/v1/collect',
+      { ...baseH, 'X-App-Key': APP_KEY }, nd(ev)) === 200;
+    // (d) token minting follows the same rule
+    const jsonH = { 'Content-Type': 'application/json', 'X-Tenant-Id': TENANT };
+    const tokBody = JSON.stringify({ sessionId: sid, installId: install });
+    const mintSiteOnly = await post('/v1/collect/token',
+      { ...jsonH, 'X-Site-Key': SITE_KEY }, tokBody) === 401;
+    const mintAppKey = await post('/v1/collect/token',
+      { ...jsonH, 'X-App-Key': APP_KEY }, tokBody) === 200;
+    // (e) browser path untouched: Origin + site key + allowlist still works
+    const browserOk = (await sendCollect(install, [{ ...ev[0], eventId: crypto.randomUUID() }]))
+      .accepted >= 0;
+
+    const ok = holeClosed && wrongRejected && nativeOk && mintSiteOnly && mintAppKey && browserOk;
+    console.log(`\n${ok ? '✓' : '✗'} appkey: hole-closed=${holeClosed} wrong-rejected=${wrongRejected} ` +
+        `native-ok=${nativeOk} mint site-only/app-key=${mintSiteOnly}/${mintAppKey} browser-ok=${browserOk}`);
+    if (!ok) process.exitCode = 1;
+  },
+
   /** Score-time payee reputation (Go server only): once one victim's held
    *  payment to a payee is confirmed as fraud, every LATER customer who pays
    *  the same payee is warned on their FIRST attempt (KNOWN_MULE_PAYEE,

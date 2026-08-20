@@ -3,10 +3,11 @@
 // injected id generator, so it carries no react-native / expo import and stays
 // unit-testable in plain Node. Background flush is wired by index via AppState.
 
+import { Platform } from 'react-native';
 import type { SdkConfig, SdkEvent } from '../types';
 
 type TransportCfg = Required<Pick<SdkConfig, 'tenantId' | 'siteKey' | 'collectorUrl'>> &
-  Pick<SdkConfig, 'sdk'> & { flushIntervalMs: number };
+  Pick<SdkConfig, 'sdk' | 'appKey'> & { flushIntervalMs: number };
 
 /** Server-issued command riding a batch response (the action channel's
  *  device leg) — e.g. an analyst kill switch. */
@@ -53,13 +54,18 @@ export class Transport {
   }
 
   private headers(): Record<string, string> {
-    return {
+    const h: Record<string, string> = {
       'Content-Type': 'application/x-ndjson',
       'X-Tenant-Id': this.cfg.tenantId,
       'X-Site-Key': this.cfg.siteKey,
       'X-Install-Id': this.installId,
       'X-Sdk': this.cfg.sdk ?? 'expo/0.1.0',
     };
+    // Native builds authenticate with the app key (requests carry no browser
+    // Origin). On web the Origin allowlist gates instead — never send the
+    // native credential from a browser context.
+    if (this.cfg.appKey && Platform.OS !== 'web') h['X-App-Key'] = this.cfg.appKey;
+    return h;
   }
 
   async flush(): Promise<void> {

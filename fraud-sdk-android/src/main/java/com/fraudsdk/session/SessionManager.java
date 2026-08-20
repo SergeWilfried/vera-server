@@ -11,6 +11,7 @@ import com.fraudsdk.collectors.CallSignalCollector;
 import com.fraudsdk.collectors.RemoteAccessCollector;
 import com.fraudsdk.events.BusinessEvent;
 import com.fraudsdk.transport.EventQueue;
+import com.fraudsdk.transport.TokenClient;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -45,6 +46,16 @@ public final class SessionManager {
     private final AtomicLong lastActivityMs = new AtomicLong(System.currentTimeMillis());
     private final AtomicReference<FraudSdk.CommandListener> commandListener =
             new AtomicReference<>();
+
+    // Server-minted session token cache (the app holds no signing key).
+    // A cached token is served only while it is fresh (< TOKEN_TTL_MS) AND
+    // still matches the current (sessionId, userRef) — rotation or a user
+    // change invalidates it and triggers a background re-mint.
+    private static final long TOKEN_TTL_MS = 45 * 60 * 1000L;
+    private volatile String cachedToken = "";
+    private volatile String tokenSessionId = "";
+    private volatile String tokenUserRef = null;
+    private volatile long tokenMintedAt = 0L;
 
     public SessionManager(Context app, SdkConfig config, EventQueue queue) {
         this.appCtx = app.getApplicationContext();
@@ -86,16 +97,72 @@ public final class SessionManager {
         }
     }
 
-    void setUser(String ref) { userRef.set(ref); }
+    void setUser(String ref) {
+        userRef.set(ref);
+        refreshTokenAsync();
+    }
 
     void clearUser() {
         userRef.set(null);
         rotateSession();
+        refreshTokenAsync();
     }
 
-    String mintToken() {
-        return SessionToken.mint(config.tenantId, sessionId.get(),
-                installId, userRef.get(), config.tenantHmacKey);
+    private boolean tokenUsable() {
+        String tok = cachedToken;
+        if (tok.isEmpty()) return false;
+        if (!sessionId.get().equals(tokenSessionId)) return false;
+        String u = userRef.get();
+        String tu = tokenUserRef;
+        if (u == null ? tu != null : !u.equals(tu)) return false;
+        return System.currentTimeMillis() - tokenMintedAt < TOKEN_TTL_MS;
+    }
+
+    /** Mint (on the worker thread) a token for the CURRENT identity; the
+     *  result is cached only if the session has not rotated meanwhile. */
+    public void refreshTokenAsync() {
+        final String sid = sessionId.get();
+        final String u = userRef.get();
+        executor.execute(() -> {
+            String tok = TokenClient.mint(config, sid, installId, u);
+            if (tok != null && sid.equals(sessionId.get())) {
+                cachedToken = tok;
+                tokenSessionId = sid;
+                tokenUserRef = u;
+                tokenMintedAt = System.currentTimeMillis();
+            }
+        });
+    }
+
+    /** Cached token for the current identity, or "" when none is fresh yet
+     *  (a background re-mint is kicked off in that case). */
+    String currentToken() {
+        if (tokenUsable()) return cachedToken;
+        refreshTokenAsync();
+        return "";
+    }
+
+    /** Ensure a fresh token, then deliver it on the main thread ("" on
+     *  failure — e.g. collector unreachable). */
+    void tokenAsync(final SessionContext.TokenCallback cb) {
+        if (tokenUsable()) {
+            final String tok = cachedToken;
+            new Handler(Looper.getMainLooper()).post(() -> cb.onToken(tok));
+            return;
+        }
+        final String sid = sessionId.get();
+        final String u = userRef.get();
+        executor.execute(() -> {
+            String tok = TokenClient.mint(config, sid, installId, u);
+            if (tok != null && sid.equals(sessionId.get())) {
+                cachedToken = tok;
+                tokenSessionId = sid;
+                tokenUserRef = u;
+                tokenMintedAt = System.currentTimeMillis();
+            }
+            final String out = tok != null ? tok : "";
+            new Handler(Looper.getMainLooper()).post(() -> cb.onToken(out));
+        });
     }
 
     // ---- server commands (action channel, device leg) ----
@@ -129,6 +196,8 @@ public final class SessionManager {
                         .put("kind", "TERMINATE_SESSION"));
                 userRef.set(null);
                 rotateSession();
+                cachedToken = "";
+                refreshTokenAsync();
 
                 final FraudSdk.CommandListener l = commandListener.get();
                 if (l != null) {

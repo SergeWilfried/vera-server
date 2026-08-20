@@ -28,6 +28,7 @@ pass unchanged, plus the Go-only `invite` scenario:
     node simulate-sdk.js esc    http://localhost:8080   # cross-session payee escalation (Go only)
     node simulate-sdk.js payee  http://localhost:8080   # score-time payee reputation (Go only)
     node simulate-sdk.js killcollect http://localhost:8080  # kill switch via /v1/collect (Go only)
+    node simulate-sdk.js appkey http://localhost:8080   # native-path X-App-Key auth (Go only)
 
 The `esc` scenario proves the `ESCALATING_PAYEE` scoring signal: two
 consecutive rising payments (>1.3x each) to the same payee — the chat-coached
@@ -54,6 +55,15 @@ browser and React Native sessions upload via the site-key path, and a
 it rides `/v1/events` — delivered once, acked by the SDK inside the dying
 session. (Previously those actions sat `pending` forever for non-Android
 sessions.)
+
+The `appkey` scenario proves native-path auth: a /v1/collect* request
+without a browser Origin must present the per-tenant app key (`X-App-Key`)
+— the public site key alone no longer writes telemetry or mints tokens
+(the H1 ingest hole). The browser path (Origin + site key + allowlist) is
+unchanged. Residual, accepted until device attestation: Origin is
+client-asserted, so a non-browser client forging an allowlisted Origin
+still reaches the browser path; attestation will close this by requiring a
+verifiable device credential in the same slot.
 
 The `rat` scenario proves the `REMOTE_ACCESS` scoring signal: a known-device
 session with an active screen-share (`PASSIVE_REMOTE_ACCESS`) + scripted input
@@ -132,7 +142,9 @@ Tenant settings + API keys:
 
 The browser SDK ([`../fraud-sdk-web`](../fraud-sdk-web)) can't hold the tenant
 HMAC secret, so its telemetry is authed by a **public** per-tenant site key +
-an Origin allowlist, and the server mints the session token:
+an Origin allowlist, and the server mints the session token. Native SDKs
+(Android v0.3, Expo) use the same endpoints with the per-tenant **app key**
+(`X-App-Key`, no Origin) instead — see the `appkey` scenario above:
 
     POST /v1/collect/token   {sessionId, installId, userRef?} -> {token}
     POST /v1/collect         NDJSON event batch (same envelope as /v1/events)

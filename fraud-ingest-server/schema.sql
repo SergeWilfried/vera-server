@@ -13,6 +13,12 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS webhook_url     text;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS site_key        text;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS allowed_origins text;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS status          text NOT NULL DEFAULT 'active';
+-- Native-app credential for the /v1/collect path (mobile SDKs send it as
+-- X-App-Key). Ships inside app binaries — extractable by determined reverse
+-- engineering, but never served to web visitors like the public site key,
+-- and revocable per tenant. The forward path is device attestation (Play
+-- Integrity / App Attest) riding this same slot.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS app_key text;
 
 -- Versioned tenant HMAC keys (SDK batch signatures, session tokens, webhook
 -- signing). key_enc is AES-256-GCM under MASTER_KEY (nonce || ciphertext) —

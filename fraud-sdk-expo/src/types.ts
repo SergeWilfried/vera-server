@@ -31,8 +31,14 @@ export interface CallSignals {
 export interface SdkConfig {
   /** Per-tenant id (matches the server's tenant registry). */
   tenantId: string;
-  /** PUBLIC per-tenant site key (safe to ship in the app bundle). */
+  /** PUBLIC per-tenant site key (safe to ship in the app bundle). Used by
+   *  browser builds, where the Origin allowlist does the real gating. */
   siteKey: string;
+  /** Per-tenant NATIVE app credential, sent as X-App-Key on the collect
+   *  path. Required on iOS/Android: the server no longer accepts the public
+   *  site key alone for requests without a browser Origin. Never used (or
+   *  needed) when running on web. */
+  appKey?: string;
   /** Collector base URL. */
   collectorUrl: string;
   /** X-Sdk header value. */

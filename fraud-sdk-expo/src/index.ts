@@ -14,7 +14,7 @@
 // the session token is minted server-side. Privacy: timing/geometry only, never
 // keystroke content; hash identifiers via FraudSdk.hash() before setUser.
 
-import { AppState, type AppStateStatus } from 'react-native';
+import { AppState, Platform, type AppStateStatus } from 'react-native';
 import type { SdkConfig, SdkEvent, LocalRisk, CallSignals } from './types';
 import { Transport, type ServerCommand } from './wire/transport';
 import { RiskTracker } from './core/risk';
@@ -111,6 +111,7 @@ function refreshToken(): Promise<void> {
           'Content-Type': 'application/json',
           'X-Tenant-Id': s.cfg.tenantId,
           'X-Site-Key': s.cfg.siteKey,
+          ...(s.cfg.appKey && Platform.OS !== 'web' ? { 'X-App-Key': s.cfg.appKey } : {}),
         },
         body: JSON.stringify({ sessionId, installId: s.installId, userRef }),
       });
@@ -236,6 +237,7 @@ export const FraudSdk = {
     const cfg: Required<SdkConfig> = {
       tenantId: config.tenantId,
       siteKey: config.siteKey,
+      appKey: config.appKey ?? '',
       collectorUrl: config.collectorUrl,
       sdk: config.sdk ?? 'expo/0.1.0',
       flushIntervalMs: config.flushIntervalMs ?? 5000,
@@ -267,6 +269,12 @@ export const FraudSdk = {
     const remoteNative = watch.start();     // false => no native module
     const callNative = callWatch.start();   // false => no native module
     const shotNative = shotWatch.start();   // false => expo-screen-capture absent
+    if (__DEV__ && !cfg.appKey && Platform.OS !== 'web') {
+      console.warn(
+        '[VeraFraudSdk] no appKey configured — native uploads and token minting ' +
+        'will be rejected (401). Pass the tenant app key to FraudSdk.init.',
+      );
+    }
     if (__DEV__) {
       console.log(
         `[VeraFraudSdk] native watches — remoteAccess: ${remoteNative}, ` +

@@ -1,8 +1,17 @@
-# Fraud SDK — Android (Java) v0.2
+# Fraud SDK — Android (Java) v0.3
 
 Behavioral fraud-detection SDK for banks and wallet providers. Zero runtime
-dependencies (org.json, javax.crypto, java.util.concurrent all ship with Android).
+dependencies (org.json and java.util.concurrent ship with Android).
 minSdk 21. All public calls are fire-and-forget and never throw.
+
+**v0.3 — no signing key in the app.** v0.2 embedded the tenant HMAC key in
+the APK (any decompiler yielded the tenant secret) and minted session tokens
+on-device. The SDK now uploads via the collect path authenticated by the
+per-tenant **native app key** (`X-App-Key` — ships in the binary like any
+mobile API key, never served to web visitors, rotatable with
+`tenant rotate-app-key`), and the session token is **minted server-side**.
+The forward path is device attestation (Play Integrity / App Attest)
+presented in this same slot.
 
 ## Integration (3 steps)
 
@@ -11,7 +20,7 @@ minSdk 21. All public calls are fire-and-forget and never throw.
 FraudSdk.init(this, SdkConfig.builder()
     .tenantId("wallet-acme")
     .environment(Environment.PRODUCTION)
-    .tenantHmacKey(keyFromSecureProvisioning)   // >= 32 bytes
+    .appKey(appKeyFromProvisioning)      // native credential — NOT the HMAC key
     .tenantHashSalt(tenantSalt)
     .build());
 
@@ -19,9 +28,13 @@ FraudSdk.init(this, SdkConfig.builder()
 FraudSdk.session().setUser(FraudSdk.hash(msisdn));
 FraudSdk.session().event(BusinessEvent.loginResult(BusinessEvent.Outcome.SUCCESS));
 
-// 3. Before critical API calls
-request.header("X-Fraud-Session", FraudSdk.session().getSessionToken());
-FraudSdk.flush();
+// 3. Before critical API calls — tokens are minted server-side, so prefer
+//    the async getter right before a payment (the sync one returns the
+//    cached token and may briefly be "" after init/login):
+FraudSdk.session().getSessionToken(token -> {
+    request.header("X-Fraud-Session", token);
+    FraudSdk.flush();
+});
 ```
 
 Optional per-field keystroke dynamics (timing only, never content) —

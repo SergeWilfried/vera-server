@@ -35,12 +35,27 @@ public class SessionContext {
         if (mgr != null && screenId != null) mgr.screenViewed(screenId);
     }
 
+    /** Receives a session token ("" if the SDK is disabled or the
+     *  collector is unreachable). Always called on the main thread. */
+    public interface TokenCallback {
+        void onToken(String token);
+    }
+
     /**
-     * Signed token joining this session to your backend call.
-     * Attach as e.g. X-Fraud-Session header; your backend forwards it
-     * to the scoring API. Empty string if the SDK is disabled.
+     * Session token joining this session to your backend call (attach as
+     * e.g. X-Fraud-Session; your backend forwards it to /v1/score). Tokens
+     * are minted SERVER-SIDE — the app holds no signing key — so this
+     * returns the cached token, which may briefly be "" right after init,
+     * login or a session rotation while the mint is in flight. Prefer
+     * {@link #getSessionToken(TokenCallback)} right before a payment.
      */
     public String getSessionToken() {
-        return mgr != null ? mgr.mintToken() : "";
+        return mgr != null ? mgr.currentToken() : "";
+    }
+
+    /** Ensure a fresh server-minted token, delivered on the main thread. */
+    public void getSessionToken(TokenCallback cb) {
+        if (mgr != null) mgr.tokenAsync(cb);
+        else cb.onToken("");
     }
 }

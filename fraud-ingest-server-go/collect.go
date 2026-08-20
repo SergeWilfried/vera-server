@@ -36,22 +36,44 @@ func (s *Server) originAllowed(origin string) bool {
 	return false
 }
 
-// authSite validates the public site key + Origin for a browser request and
-// returns the tenant id.
+// authSite validates a /v1/collect* request and returns the tenant id.
+//
+// Two paths:
+//   - Browser (Origin present): the PUBLIC site key + the tenant Origin
+//     allowlist — the model of real browser fraud/RUM SDKs. The allowlist is
+//     what defends the public key against other websites.
+//   - Native (no Origin): mobile SDKs must present the tenant APP key
+//     (X-App-Key). Unlike the site key it is never served to web visitors —
+//     it ships inside app binaries, so it is extractable by determined
+//     reverse engineering, but it turns "anyone who viewed the web page can
+//     write telemetry for any user" into "someone who unpacked the APK",
+//     and it is rotatable per tenant (tenant rotate-app-key). The forward
+//     path is device attestation (Play Integrity / App Attest) presented in
+//     this same slot.
+//
+// Residual (accepted until attestation): Origin is client-asserted, so a
+// non-browser client that forges an allowlisted Origin still reaches the
+// browser path with the public site key. Attestation closes this by
+// requiring a verifiable device credential regardless of Origin.
 func (s *Server) authSite(r *http.Request) (string, bool) {
 	tenantID := r.Header.Get("X-Tenant-Id")
-	siteKey := r.Header.Get("X-Site-Key")
 	origin := r.Header.Get("Origin")
 	t, ok := s.getTenant(tenantID)
-	if !ok || siteKey == "" || t.SiteKey != siteKey {
+	if !ok {
 		return "", false
 	}
-	// Native apps (mobile SDKs) send no Origin — there is no browser and thus no
-	// cross-site risk, so the site key alone authenticates. Browser requests
-	// (Origin present) must still match the tenant's allowlist, which is what
-	// defends the public key against other websites.
 	if origin == "" {
+		// Native path: app key required — the site key alone no longer
+		// authenticates (it is public; this was the H1 ingest hole).
+		appKey := r.Header.Get("X-App-Key")
+		if appKey == "" || t.AppKey == "" || t.AppKey != appKey {
+			return "", false
+		}
 		return tenantID, true
+	}
+	siteKey := r.Header.Get("X-Site-Key")
+	if siteKey == "" || t.SiteKey != siteKey {
+		return "", false
 	}
 	allowed := false
 	for _, o := range t.AllowedOrigins {

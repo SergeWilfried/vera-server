@@ -27,6 +27,8 @@ const BACKEND = process.env.EXPO_PUBLIC_BANK_BACKEND ??
   (process.env.EXPO_PUBLIC_COLLECTOR_URL ? '' : `http://${HOST}:8099`);
 const TENANT = 'wallet-acme';
 const SITE_KEY = 'site_wallet-acme_pub';
+// Identifiant natif du tenant (X-App-Key) — requis hors navigateur.
+const APP_KEY = process.env.EXPO_PUBLIC_APP_KEY ?? 'app_wallet-acme_native';
 
 // Identité HACHÉE, gardée stable : c'est le profil comportemental que le serveur
 // de démo connaît (historique, médiane des montants). NE PAS changer, sinon les
@@ -90,7 +92,7 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      await FraudSdk.init({ tenantId: TENANT, siteKey: SITE_KEY, collectorUrl: COLLECTOR, flushIntervalMs: 2000 });
+      await FraudSdk.init({ tenantId: TENANT, siteKey: SITE_KEY, appKey: APP_KEY, collectorUrl: COLLECTOR, flushIntervalMs: 2000 });
       FraudSdk.onLocalRisk((r: LocalRisk) => setRiskReasons(r.reasons));
       FraudSdk.onScreenshot(() => setShotSeen(true));
       setReady(true);

@@ -3,7 +3,6 @@ package com.fraudsdk.transport;
 import android.content.Context;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
-import android.util.Base64;
 
 import com.fraudsdk.SdkConfig;
 import com.fraudsdk.session.SessionManager;
@@ -23,10 +22,10 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPOutputStream;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
-
-/** Periodic batched upload: NDJSON -> gzip -> HMAC-signed POST. Exponential backoff. */
+/** Periodic batched upload: NDJSON -> gzip -> POST /v1/collect, authenticated
+ *  by the per-tenant native app key (X-App-Key). v0.2 signed batches with the
+ *  tenant HMAC key, which shipped the tenant secret inside every APK; the
+ *  signing key now lives only server-side. Exponential backoff. */
 public final class EventUploader {
 
     private final Context app;
@@ -67,9 +66,9 @@ public final class EventUploader {
             if (batch.isEmpty()) return;
 
             byte[] body = gzip(String.join("\n", batch).getBytes(StandardCharsets.UTF_8));
-            String sig = hmac(body, config.tenantHmacKey);
 
-            HttpURLConnection c = (HttpURLConnection) new URL(config.ingestUrl).openConnection();
+            HttpURLConnection c = (HttpURLConnection)
+                    new URL(config.collectorBaseUrl + "/v1/collect").openConnection();
             c.setConnectTimeout(10_000);
             c.setReadTimeout(10_000);
             c.setRequestMethod("POST");
@@ -77,14 +76,9 @@ public final class EventUploader {
             c.setRequestProperty("Content-Type", "application/x-ndjson");
             c.setRequestProperty("Content-Encoding", "gzip");
             c.setRequestProperty("X-Tenant-Id", config.tenantId);
+            c.setRequestProperty("X-App-Key", config.appKey);
             c.setRequestProperty("X-Install-Id", sessions.installId());
-            c.setRequestProperty("X-Signature", sig);
-            // Advertise which key version signed this batch (additive; the
-            // server also verifies by trying all live keys when absent).
-            if (!config.tenantKeyId.isEmpty()) {
-                c.setRequestProperty("X-Key-Id", config.tenantKeyId);
-            }
-            c.setRequestProperty("X-Sdk", "android/0.2.0");
+            c.setRequestProperty("X-Sdk", "android/0.3.0");
 
             try (OutputStream os = c.getOutputStream()) { os.write(body); }
 
@@ -142,11 +136,5 @@ public final class EventUploader {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         try (GZIPOutputStream gz = new GZIPOutputStream(bos)) { gz.write(in); }
         return bos.toByteArray();
-    }
-
-    private static String hmac(byte[] body, byte[] key) throws Exception {
-        Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(new SecretKeySpec(key, "HmacSHA256"));
-        return Base64.encodeToString(mac.doFinal(body), Base64.NO_WRAP);
     }
 }

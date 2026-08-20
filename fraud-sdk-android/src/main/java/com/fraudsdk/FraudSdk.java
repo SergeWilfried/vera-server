@@ -27,7 +27,7 @@ import com.fraudsdk.transport.EventUploader;
  *   FraudSdk.init(app, SdkConfig.builder()
  *       .tenantId("wallet-acme")
  *       .environment(Environment.PRODUCTION)
- *       .tenantHmacKey(key)
+ *       .appKey(appKeyFromProvisioning)   // native credential; no HMAC key in the app
  *       .build());
  *   FraudSdk.session().setUser(FraudSdk.hash(msisdn));
  * </pre>
@@ -94,6 +94,8 @@ public final class FraudSdk {
 
                 sdk.uploader.start();
                 sdk.callWatch.start();
+                // Pre-mint the (server-side) session token for this session.
+                sdk.sessionManager.refreshTokenAsync();
             }
         } catch (Throwable t) {
             Log.w(TAG, "init failed, SDK disabled", t);
