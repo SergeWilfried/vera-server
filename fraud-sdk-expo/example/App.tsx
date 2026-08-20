@@ -89,12 +89,18 @@ export default function App() {
   const [shotSeen, setShotSeen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState('');
+  const [seeded, setSeeded] = useState(false);
+  const [terminated, setTerminated] = useState(false);
 
   useEffect(() => {
     (async () => {
       await FraudSdk.init({ tenantId: TENANT, siteKey: SITE_KEY, appKey: APP_KEY, collectorUrl: COLLECTOR, flushIntervalMs: 2000 });
       FraudSdk.onLocalRisk((r: LocalRisk) => setRiskReasons(r.reasons));
       FraudSdk.onScreenshot(() => setShotSeen(true));
+      // Coupe-circuit analyste : quand un analyste met fin à la session depuis
+      // la console, le SDK a déjà délié l'utilisateur et fait tourner la
+      // session — l'application doit forcer la déconnexion.
+      FraudSdk.onSessionTerminated(() => setTerminated(true));
       setReady(true);
     })();
   }, []);
@@ -112,16 +118,46 @@ export default function App() {
     setAmountStr(String(p.amount));
   }
 
-  async function login() {
-    // Await it: resolves once a token bound to this user exists, so the first
-    // /v1/score after login sees the customer's profile (known device, history).
-    await FraudSdk.session().setUser(await FraudSdk.hash(DEMO_REF));
-    FraudSdk.session().event(BusinessEvent.loginResult('SUCCESS'));
-    FraudSdk.session().screenView('dashboard');
-    setScreen('dashboard');
+  // Profil de référence. Le moteur compare chaque montant à l'historique du
+  // client : un appareil neuf n'en a aucun, donc tout paraît « normal » et les
+  // scénarios STEP-UP restent hors d'atteinte. On rejoue donc trois petits
+  // paiements approuvés à la connexion — la médiane (~5 000 FCFA) existe, et
+  // un virement de 90 000 se lit alors comme très au-dessus du profil, comme
+  // sur un vrai compte.
+  const SEED_AMOUNTS = [4200, 5000, 5600];
+
+  async function seedProfile(): Promise<void> {
+    try {
+      const token = await FraudSdk.session().getToken();
+      if (!token) return;
+      const run = Date.now();
+      for (let i = 0; i < SEED_AMOUNTS.length; i++) {
+        await scorePayment(token, SEED_AMOUNTS[i], false, 'PAYEE-SEED', `SEED-${run}-${i}`);
+      }
+      setSeeded(true);
+    } catch {
+      /* démo : sans profil, seuls les scénarios de montant sont atténués */
+    }
   }
 
-  async function scorePayment(token: string, amount: number, payeeNew: boolean, payeeRef: string): Promise<Decision> {
+  async function login() {
+    setProgress('Préparation du profil…');
+    setBusy(true);
+    try {
+      // Await it: resolves once a token bound to this user exists, so the first
+      // /v1/score after login sees the customer's profile (known device, history).
+      await FraudSdk.session().setUser(await FraudSdk.hash(DEMO_REF));
+      FraudSdk.session().event(BusinessEvent.loginResult('SUCCESS'));
+      await seedProfile();
+      FraudSdk.session().screenView('dashboard');
+      setScreen('dashboard');
+    } finally {
+      setBusy(false);
+      setProgress('');
+    }
+  }
+
+  async function scorePayment(token: string, amount: number, payeeNew: boolean, payeeRef: string, txnRef?: string): Promise<Decision> {
     const res = BACKEND
       ? await fetch(`${BACKEND}/demo/pay`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -132,7 +168,7 @@ export default function App() {
           body: JSON.stringify({
             sessionToken: token,
             transaction: {
-              txnRef: 'DEMO-' + Date.now(), amount, currency: 'XOF',
+              txnRef: txnRef ?? 'DEMO-' + Date.now(), amount, currency: 'XOF',
               payeeIsNew: payeeNew, payeeRef, channel: 'BANK_TRANSFER',
             },
           }),
@@ -213,6 +249,30 @@ export default function App() {
     );
   }
 
+  // Coupe-circuit : un analyste a terminé la session depuis la console.
+  if (terminated) {
+    return (
+      <View style={[styles.app, styles.center, { padding: 24 }]}>
+        <Badge color={C.stop} icon="!" />
+        <Text style={styles.h2}>Session terminée</Text>
+        <Text style={styles.sub}>
+          Un analyste antifraude a mis fin à cette session depuis la console Verawall — le SDK a
+          délié le compte et fait tourner l’identifiant de session sur l’appareil. Reconnectez-vous
+          pour continuer.
+        </Text>
+        <Btn
+          label="Se reconnecter"
+          onPress={() => {
+            setTerminated(false);
+            setVerdict(null);
+            setSeeded(false);
+            setScreen('login');
+          }}
+        />
+      </View>
+    );
+  }
+
   const amount = Number(amountStr) || pick.amount;
 
   return (
@@ -267,7 +327,7 @@ export default function App() {
               secureTextEntry
               keyboardType="number-pad"
             />
-            <Btn label="Se connecter" onPress={login} />
+            <Btn label={busy ? (progress || 'Connexion…') : 'Se connecter'} onPress={login} disabled={busy} />
           </Card>
         )}
 
@@ -321,7 +381,7 @@ export default function App() {
         <VerawallPanel verdict={verdict} shareSim={shareSim} onToggleShare={toggleShare}
           callSim={callSim} onToggleCall={toggleCall}
           preventShots={preventShots} onTogglePreventShots={togglePreventShots}
-          shotSeen={shotSeen} />
+          shotSeen={shotSeen} seeded={seeded} />
       </ScrollView>
     </View>
   );
@@ -383,10 +443,11 @@ function Outcome({ d, amount, onDone, onBalance }: { d: Decision; amount: number
 }
 
 function VerawallPanel({ verdict, shareSim, onToggleShare, callSim, onToggleCall,
-  preventShots, onTogglePreventShots, shotSeen }: {
+  preventShots, onTogglePreventShots, shotSeen, seeded }: {
   verdict: Decision | null; shareSim: boolean; onToggleShare: (v: boolean) => void;
   callSim: boolean; onToggleCall: (v: boolean) => void;
   preventShots: boolean; onTogglePreventShots: (v: boolean) => void; shotSeen: boolean;
+  seeded: boolean;
 }) {
   const band = verdict?.decision;
   return (
@@ -399,6 +460,12 @@ function VerawallPanel({ verdict, shareSim, onToggleShare, callSim, onToggleCall
         </View>
       </View>
       {!band && <Text style={styles.muted}>Session liée. Signaux tactiles, de frappe et appareil capturés — horodatage uniquement, jamais le contenu.</Text>}
+      {seeded && !band && (
+        <Text style={styles.muted}>
+          Profil comportemental : 3 paiements de référence (médiane 5 000 FCFA) — les montants sont
+          désormais évalués par rapport à cet historique.
+        </Text>
+      )}
       {band && (
         <>
           <Text style={styles.muted}>Le backend de la banque a appelé /v1/score avec le jeton de session. Verdict :</Text>
