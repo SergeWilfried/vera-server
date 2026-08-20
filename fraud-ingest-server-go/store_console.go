@@ -1034,7 +1034,9 @@ func defaultSettings() map[string]any {
 			"digest": true, "webhook": true, "sms": true, "weekly": true,
 		},
 		"modules": map[string]any{
-			"bip": true, "scamflag": true, "insights": true, "fraudintel": true, "cffc": true,
+			// Real platform capabilities (console renders names for these keys).
+			"bip": true, "payeeIntel": true, "tuning": true,
+			"actionChannel": true, "amlTwoFiles": true,
 		},
 		"integrations": []any{
 			map[string]any{"name": "Core banking API", "detail": "Payment holds & releases · v2.4", "status": "Connected", "ok": true},
