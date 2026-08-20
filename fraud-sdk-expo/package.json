@@ -1,7 +1,7 @@
 {
   "name": "@veratools/fraud-sdk-expo",
   "version": "0.1.0",
-  "description": "React Native / Expo behavioral-fraud SDK — touch & keystroke dynamics, device fingerprint, screen-share / remote-access detection, session risk. Emits the same mobile wire as the Android SDK; posts to the collector with a public site key.",
+  "description": "React Native / Expo behavioral-fraud SDK \u2014 touch & keystroke dynamics, device fingerprint, screen-share / remote-access detection, session risk. Emits the same mobile wire as the Android SDK; posts to the collector with a public site key.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -29,8 +29,10 @@
     "expo": ">=50"
   },
   "dependencies": {
+    "expo-cellular": "*",
     "expo-crypto": "*",
     "expo-device": "*",
+    "expo-location": "*",
     "expo-screen-capture": "*",
     "expo-secure-store": "*"
   },

@@ -38,6 +38,9 @@ import {
   preventScreenCapture,
   type ScreenshotWatch,
 } from './collectors/screenCapture';
+import { reportIntegrity } from './collectors/integrity';
+import { reportLocation } from './collectors/location';
+import { reportSimTelemetry } from './collectors/simTelemetry';
 import { BusinessEvent } from './events';
 import { _setReporter } from './ui/InterventionSheet';
 
@@ -267,6 +270,14 @@ export const FraudSdk = {
       firstSeen: install.firstSeen,
       installAgeMs: install.firstSeen != null ? Date.now() - install.firstSeen : null,
     });
+    // Passive one-shot collectors (device integrity, coarse location, SIM
+    // identity). Fire and forget: each degrades to a no-op when its optional
+    // module is absent or permission was never granted, and none of them may
+    // delay init.
+    void reportIntegrity(enqueue);
+    void reportLocation(enqueue);
+    void reportSimTelemetry(enqueue);
+
     const remoteNative = watch.start();     // false => no native module
     const callNative = callWatch.start();   // false => no native module
     const shotNative = shotWatch.start();   // false => expo-screen-capture absent

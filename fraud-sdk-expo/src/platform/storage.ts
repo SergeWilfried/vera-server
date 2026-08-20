@@ -44,6 +44,25 @@ export async function getInstall(): Promise<Install> {
   return { id, firstSeen: since ? Number(since) : null };
 }
 
+/** Generic keystore access for collectors that must remember something across
+ *  sessions (e.g. the SIM identity fingerprint). Both degrade to a no-op /
+ *  null when the keystore is unavailable — never throw into the host app. */
+export async function getItem(key: string): Promise<string | null> {
+  try {
+    return await SecureStore.getItemAsync(key);
+  } catch {
+    return null;
+  }
+}
+
+export async function setItem(key: string, value: string): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(key, value);
+  } catch {
+    /* keystore unavailable — the comparison simply restarts next launch */
+  }
+}
+
 /** @deprecated use getInstall(); kept for callers that only need the id. */
 export async function getInstallId(): Promise<string> {
   return (await getInstall()).id;

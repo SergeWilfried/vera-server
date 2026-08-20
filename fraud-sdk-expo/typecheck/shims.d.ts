@@ -88,5 +88,24 @@ declare module 'expo-device' {
   export const osVersion: string | null;
   export const deviceType: number | null;
   export const isDevice: boolean;
+  export function isRootedExperimentalAsync(): Promise<boolean>;
+  export function isSideLoadingEnabledAsync(): Promise<boolean>;
   export const totalMemory: number | null;
+}
+
+declare module 'expo-location' {
+  export function getForegroundPermissionsAsync(): Promise<{ granted: boolean }>;
+  export function getLastKnownPositionAsync(opts?: { maxAge?: number }): Promise<{
+    coords: { latitude: number; longitude: number; accuracy?: number | null };
+    timestamp: number;
+    mocked?: boolean;
+  } | null>;
+  export function hasServicesEnabledAsync(): Promise<boolean>;
+}
+
+declare module 'expo-cellular' {
+  export function getCarrierNameAsync(): Promise<string | null>;
+  export function getMobileCountryCodeAsync(): Promise<string | null>;
+  export function getMobileNetworkCodeAsync(): Promise<string | null>;
+  export function getIsoCountryCodeAsync(): Promise<string | null>;
 }
