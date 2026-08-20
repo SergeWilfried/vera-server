@@ -94,7 +94,10 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      await FraudSdk.init({ tenantId: TENANT, siteKey: SITE_KEY, appKey: APP_KEY, collectorUrl: COLLECTOR, flushIntervalMs: 2000 });
+      // heartbeatMs court en démo : le coupe-circuit analyste doit se voir en
+      // quelques secondes sur scène (défaut SDK : 30 s).
+      await FraudSdk.init({ tenantId: TENANT, siteKey: SITE_KEY, appKey: APP_KEY,
+        collectorUrl: COLLECTOR, flushIntervalMs: 2000, heartbeatMs: 5000 });
       FraudSdk.onLocalRisk((r: LocalRisk) => setRiskReasons(r.reasons));
       FraudSdk.onScreenshot(() => setShotSeen(true));
       // Coupe-circuit analyste : quand un analyste met fin à la session depuis

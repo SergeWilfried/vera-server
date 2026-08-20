@@ -151,8 +151,11 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 			events = append(events, ev)
 		}
 	}
-	log.Printf("⇢ collect tenant=%s sdk=%s install=%s events=%d",
-		tenantID, r.Header.Get("X-Sdk"), short(installID, 8), len(events))
+	// Log the session too: an idle heartbeat carries no events, so the header
+	// is the only clue to which session a poll belongs to.
+	log.Printf("⇢ collect tenant=%s sdk=%s install=%s sess=%s events=%d",
+		tenantID, r.Header.Get("X-Sdk"), short(installID, 8),
+		short(r.Header.Get("X-Session-Id"), 8), len(events))
 
 	stored, err := s.recordBatch(ctx, tenantID, installID, events)
 	if err != nil {
@@ -168,7 +171,7 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 	// analyst kill switch reaches browser and React Native sessions too (they
 	// upload via the site-key path and were previously unreachable: their
 	// TERMINATE_SESSION actions sat 'pending' forever).
-	out := s.deviceCommandLeg(ctx, tenantID, events)
+	out := s.deviceCommandLeg(ctx, tenantID, events, r.Header.Get("X-Session-Id"))
 	writeJSON(w, 200, map[string]any{
 		"accepted": stored, "duplicates": len(events) - stored, "commands": out})
 }

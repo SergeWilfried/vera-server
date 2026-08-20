@@ -40,6 +40,8 @@ public final class EventUploader {
             });
 
     private volatile long backoffMs = 0;
+    /** Epoch ms of the last POST (upload or heartbeat) — paces the poll. */
+    private volatile long lastPostMs = 0;
 
     public EventUploader(Context app, SdkConfig config, EventQueue queue, SessionManager sessions) {
         this.app = app;
@@ -63,7 +65,12 @@ public final class EventUploader {
             if (!isConnected()) return;
 
             List<String> batch = queue.peek(config.maxBatchSize);
-            if (batch.isEmpty()) return;
+            if (batch.isEmpty()) {
+                // Nothing to upload: poll for server commands so containment
+                // does not depend on the customer interacting with the app.
+                heartbeat();
+                return;
+            }
 
             byte[] body = gzip(String.join("\n", batch).getBytes(StandardCharsets.UTF_8));
 
@@ -78,9 +85,11 @@ public final class EventUploader {
             c.setRequestProperty("X-Tenant-Id", config.tenantId);
             c.setRequestProperty("X-App-Key", config.appKey);
             c.setRequestProperty("X-Install-Id", sessions.installId());
+            c.setRequestProperty("X-Session-Id", sessions.currentSessionId());
             c.setRequestProperty("X-Sdk", "android/0.3.0");
 
             try (OutputStream os = c.getOutputStream()) { os.write(body); }
+            lastPostMs = System.currentTimeMillis();
 
             int code = c.getResponseCode();
             if (code >= 200 && code < 300) {
@@ -96,6 +105,36 @@ public final class EventUploader {
             c.disconnect();
         } catch (Exception e) {
             backoffMs = backoffMs == 0 ? 5_000 : Math.min(backoffMs * 2, 60_000);
+        }
+    }
+
+    /**
+     * Empty POST that exists only to collect pending server commands. The
+     * session id travels in X-Session-Id, since there are no events to carry
+     * it — an idle app must still be reachable by the analyst kill switch.
+     */
+    private void heartbeat() {
+        long every = config.heartbeatMs;
+        if (every <= 0 || System.currentTimeMillis() - lastPostMs < every) return;
+        lastPostMs = System.currentTimeMillis();
+        try {
+            HttpURLConnection c = (HttpURLConnection)
+                    new URL(config.collectorBaseUrl + "/v1/collect").openConnection();
+            c.setConnectTimeout(10_000);
+            c.setReadTimeout(10_000);
+            c.setRequestMethod("POST");
+            c.setDoOutput(true);
+            c.setRequestProperty("Content-Type", "application/x-ndjson");
+            c.setRequestProperty("X-Tenant-Id", config.tenantId);
+            c.setRequestProperty("X-App-Key", config.appKey);
+            c.setRequestProperty("X-Install-Id", sessions.installId());
+            c.setRequestProperty("X-Session-Id", sessions.currentSessionId());
+            c.setRequestProperty("X-Sdk", "android/0.3.0");
+            try (OutputStream os = c.getOutputStream()) { os.write(new byte[0]); }
+            if (c.getResponseCode() / 100 == 2) handleResponseCommands(c);
+            c.disconnect();
+        } catch (Exception ignored) {
+            /* offline — the next beat retries */
         }
     }
 

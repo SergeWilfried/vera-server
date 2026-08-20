@@ -20,11 +20,44 @@ export class Transport {
   /** Set by the SDK: invoked with any commands the server returns. */
   onCommands?: (commands: ServerCommand[]) => void;
 
+  /** Epoch ms of the last POST (upload or heartbeat) — paces the poll. */
+  private lastPostAt = 0;
+
   constructor(
-    private cfg: Required<Pick<SdkConfig, 'tenantId' | 'siteKey' | 'sdk' | 'flushIntervalMs'>> & { collectorUrl: string },
+    private cfg: Required<Pick<SdkConfig, 'tenantId' | 'siteKey' | 'sdk' | 'flushIntervalMs'>> &
+      { collectorUrl: string; heartbeatMs?: number },
     private installId: string,
+    /** Current session id, read at call time (it rotates on logout/terminate).
+     *  Sent as X-Session-Id so an EMPTY heartbeat can still be matched to a
+     *  session server-side. */
+    private currentSessionId: () => string = () => '',
   ) {
     this.base = cfg.collectorUrl.replace(/\/$/, '');
+  }
+
+  /** Poll for server commands when there is nothing to upload — containment
+   *  must not depend on the customer interacting with the page. */
+  private async heartbeat(): Promise<void> {
+    const every = this.cfg.heartbeatMs ?? 30_000;
+    if (!every || Date.now() - this.lastPostAt < every) return;
+    this.lastPostAt = Date.now();
+    try {
+      const res = await fetch(this.base + '/v1/collect', {
+        method: 'POST',
+        headers: this.headers(),
+        body: '',
+      });
+      if (res.ok && this.onCommands) {
+        try {
+          const data = (await res.json()) as { commands?: ServerCommand[] } | null;
+          if (data?.commands?.length) this.onCommands(data.commands);
+        } catch {
+          /* no JSON body — fine */
+        }
+      }
+    } catch {
+      /* offline — the next beat retries */
+    }
   }
 
   start(): void {
@@ -57,17 +90,24 @@ export class Transport {
   }
 
   private headers(): Record<string, string> {
-    return {
+    const h: Record<string, string> = {
       'Content-Type': 'application/x-ndjson',
       'X-Tenant-Id': this.cfg.tenantId,
       'X-Site-Key': this.cfg.siteKey,
       'X-Install-Id': this.installId,
       'X-Sdk': this.cfg.sdk,
     };
+    const sid = this.currentSessionId();
+    if (sid) h['X-Session-Id'] = sid;
+    return h;
   }
 
   async flush(): Promise<void> {
-    if (this.queue.length === 0) return;
+    if (this.queue.length === 0) {
+      await this.heartbeat();
+      return;
+    }
+    this.lastPostAt = Date.now();
     const batch = this.queue.splice(0, this.queue.length);
     try {
       const res = await fetch(this.base + '/v1/collect', {

@@ -241,12 +241,13 @@ export const FraudSdk = {
       collectorUrl: config.collectorUrl,
       sdk: config.sdk ?? 'expo/0.1.0',
       flushIntervalMs: config.flushIntervalMs ?? 5000,
+      heartbeatMs: config.heartbeatMs ?? 30000,
       remoteAccessPollMs: config.remoteAccessPollMs ?? 4000,
       callPollMs: config.callPollMs ?? 4000,
     };
     const install = await getInstall();
     const installId = install.id;
-    const transport = new Transport(cfg, installId, newId);
+    const transport = new Transport(cfg, installId, newId, () => state?.sessionId ?? '');
     transport.onCommands = handleServerCommands;
     const risk = new RiskTracker();
     const touch = createTouchCapture(enqueue);

@@ -151,7 +151,7 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 		}
 		w.Header().Set("Vary", "Origin")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding, X-Tenant-Id, X-Site-Key, X-App-Key, X-Install-Id, X-Sdk")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding, X-Tenant-Id, X-Site-Key, X-App-Key, X-Install-Id, X-Session-Id, X-Sdk")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(204)

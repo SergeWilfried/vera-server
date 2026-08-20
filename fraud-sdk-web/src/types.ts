@@ -23,6 +23,11 @@ export interface SdkConfig {
   sdk?: string;
   /** Batch upload cadence (ms). */
   flushIntervalMs?: number;
+  /** Command-poll cadence (ms) when there is nothing to upload. Server-issued
+   *  commands (the analyst kill switch) ride upload responses, so an idle tab
+   *  would never hear about them; this posts an empty batch at most this often
+   *  to collect them. 0 disables polling. Default 30000. */
+  heartbeatMs?: number;
   /** Log integration problems (e.g. a failed token mint) to the console. */
   debug?: boolean;
 }

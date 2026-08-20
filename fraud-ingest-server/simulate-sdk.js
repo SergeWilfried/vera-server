@@ -1030,6 +1030,72 @@ const scenarios = {
     }
   },
 
+  /** Heartbeat command poll (Go server only): an IDLE client has no telemetry
+   *  to upload, and commands ride upload responses — so without a poll the
+   *  analyst kill switch would wait for the customer to interact. An empty
+   *  POST carrying X-Session-Id must return the pending command and mark it
+   *  delivered. Containment must not depend on the fraudster staying busy. */
+  async heartbeat() {
+    const APP_KEY = process.env.APP_KEY || 'app_wallet-acme_native';
+    const u = newUser();
+    const sid = crypto.randomUUID();
+
+    // A session the server knows about — shaped like a takeover so the score
+    // holds and raises the alert an analyst would act on.
+    await sendCollect(u.install, [
+      { eventId: crypto.randomUUID(), type: 'BIZ_LOGIN_RESULT', sessionId: sid,
+        installId: u.install, userRef: u.ref, ts: Date.now(), payload: { outcome: 'SUCCESS' } },
+      { eventId: crypto.randomUUID(), type: 'PASSIVE_REMOTE_ACCESS', sessionId: sid,
+        installId: u.install, userRef: u.ref, ts: Date.now(),
+        payload: { screenShareLikely: true, extraDisplays: 1, accessibilitySuspect: false,
+                   accessibilityMatches: [] } },
+    ]);
+    const H = { 'Authorization': 'Bearer ' + (process.env.CONSOLE_KEY || 'dev-console-key'),
+                'Content-Type': 'application/json' };
+    const alerts = await fetch(BASE + '/v1/console/alerts?limit=50', { headers: H }).then(r => r.json());
+    let alertId = (alerts.find(a => a.session_id === sid) || {}).id;
+    if (!alertId) {
+      // No natural alert for this quiet session — score a payment that holds.
+      const tok = await collectToken(sid, u.install, u.ref);
+      const got = await sendScore(tok, { txnRef: 'HB-' + Date.now(), amount: 9_000_000,
+        currency: 'CZK', payeeIsNew: true });
+      alertId = got.alertId;
+    }
+    if (!alertId) { console.log('\n✗ heartbeat: could not raise an alert to act on'); process.exitCode = 1; return; }
+
+    const action = await fetch(BASE + `/v1/console/alerts/${alertId}/actions`, {
+      method: 'POST', headers: H, body: JSON.stringify({ kind: 'TERMINATE_SESSION' }),
+    }).then(r => r.json());
+
+    // The idle poll: EMPTY body, session only in the header.
+    const res = await fetch(BASE + '/v1/collect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-ndjson', 'X-Tenant-Id': TENANT,
+                 'X-App-Key': APP_KEY, 'X-Install-Id': u.install, 'X-Session-Id': sid,
+                 'X-Sdk': 'android/0.3.0' },
+      body: '',
+    });
+    const body = await res.json();
+    const cmd = (body.commands || []).find(c => c.kind === 'TERMINATE_SESSION');
+    const idle = body.accepted === 0;
+    const targeted = cmd && cmd.sessionId === sid;
+
+    // Delivered exactly once: a second poll must not repeat it.
+    const again = await fetch(BASE + '/v1/collect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-ndjson', 'X-Tenant-Id': TENANT,
+                 'X-App-Key': APP_KEY, 'X-Install-Id': u.install, 'X-Session-Id': sid,
+                 'X-Sdk': 'android/0.3.0' },
+      body: '',
+    }).then(r => r.json());
+    const once = (again.commands || []).length === 0;
+
+    const ok = idle && !!targeted && once && action.id;
+    console.log(`\n${ok ? '✓' : '✗'} heartbeat: idle-batch=${idle} command-delivered=${!!targeted} ` +
+        `delivered-once=${once} action=${action.id}`);
+    if (!ok) process.exitCode = 1;
+  },
+
   /** Native-path auth (Go server only): requests WITHOUT a browser Origin
    *  must present the per-tenant app key (X-App-Key). The public site key
    *  alone no longer writes telemetry or mints tokens for arbitrary users —

@@ -101,7 +101,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Device leg of the action channel: hand pending terminate commands
 	// for these sessions back to the SDK in the batch response.
-	out := s.deviceCommandLeg(ctx, tenantID, events)
+	out := s.deviceCommandLeg(ctx, tenantID, events, r.Header.Get("X-Session-Id"))
 	// accepted = events stored; duplicates = resent events already on file
 	// (same contract as /v1/transactions).
 	writeJSON(w, 200, map[string]any{
@@ -113,15 +113,23 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // channel, shared by /v1/events (HMAC SDKs) and /v1/collect (site-key SDKs).
 // Degrades to no commands on a store error: the batch was already committed,
 // and an undelivered command simply rides the next upload beat.
-func (s *Server) deviceCommandLeg(ctx context.Context, tenantID string, events []IngestEvent) []map[string]any {
+// extraSessionID (the X-Session-Id header) lets an SDK poll for commands with
+// an EMPTY batch: an idle app has no telemetry to upload, and without it the
+// analyst kill switch would not reach the device until the customer happened
+// to interact. Containment must not depend on the fraudster staying busy.
+func (s *Server) deviceCommandLeg(ctx context.Context, tenantID string, events []IngestEvent, extraSessionID string) []map[string]any {
 	seen := map[string]bool{}
 	sessionIDs := []string{}
-	for _, ev := range events {
-		if ev.SessionID != "" && !seen[ev.SessionID] {
-			seen[ev.SessionID] = true
-			sessionIDs = append(sessionIDs, ev.SessionID)
+	add := func(id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			sessionIDs = append(sessionIDs, id)
 		}
 	}
+	for _, ev := range events {
+		add(ev.SessionID)
+	}
+	add(extraSessionID)
 	out := []map[string]any{}
 	commands, err := s.pendingDeviceCommands(ctx, tenantID, sessionIDs)
 	if err != nil {

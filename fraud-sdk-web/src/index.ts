@@ -211,12 +211,13 @@ export const FraudSdk = {
       collectorUrl: resolveBase(config.collectorUrl),
       sdk: config.sdk ?? 'web/0.1.0',
       flushIntervalMs: config.flushIntervalMs ?? 5000,
+      heartbeatMs: config.heartbeatMs ?? 30000,
       debug: config.debug ?? false,
     };
     const install = getInstall();
     const installId = install.id;
     const sessionId = randomId();
-    const transport = new Transport(cfg, installId);
+    const transport = new Transport(cfg, installId, () => state?.sessionId ?? '');
     const fp = fingerprint();
     state = { cfg, installId, sessionId, tokenMintedAt: 0, transport, detach: [],
               headless: fp.headless, remoteActive: false };

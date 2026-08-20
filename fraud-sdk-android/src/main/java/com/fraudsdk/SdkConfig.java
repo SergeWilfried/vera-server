@@ -19,6 +19,11 @@ public final class SdkConfig {
     public final long idleTimeoutMs;
     public final int maxBatchSize;
     public final long uploadIntervalMs;
+    /** Command-poll cadence (ms) when the queue is empty. Server-issued
+     *  commands (the analyst kill switch) ride upload responses, so an idle
+     *  app would never hear about them; the uploader posts an empty batch at
+     *  most this often to collect them. 0 disables polling. */
+    public final long heartbeatMs;
     public final boolean playIntegrityEnabled;
     public final LocationTier locationTier;
 
@@ -34,6 +39,7 @@ public final class SdkConfig {
         this.idleTimeoutMs = b.idleTimeoutMs;
         this.maxBatchSize = b.maxBatchSize;
         this.uploadIntervalMs = b.uploadIntervalMs;
+        this.heartbeatMs = b.heartbeatMs;
         this.playIntegrityEnabled = b.playIntegrityEnabled;
         this.locationTier = b.locationTier;
     }
@@ -49,6 +55,7 @@ public final class SdkConfig {
         private long idleTimeoutMs = 5 * 60 * 1000L;
         private int maxBatchSize = 50;
         private long uploadIntervalMs = 15 * 1000L;
+        private long heartbeatMs = 30 * 1000L;
         private boolean playIntegrityEnabled = true;
         private LocationTier locationTier = LocationTier.TIER1_OPPORTUNISTIC_COARSE;
 
@@ -60,6 +67,7 @@ public final class SdkConfig {
         public Builder idleTimeoutMs(long v) { this.idleTimeoutMs = v; return this; }
         public Builder maxBatchSize(int v) { this.maxBatchSize = v; return this; }
         public Builder uploadIntervalMs(long v) { this.uploadIntervalMs = v; return this; }
+        public Builder heartbeatMs(long v) { this.heartbeatMs = v; return this; }
         public Builder playIntegrityEnabled(boolean v) { this.playIntegrityEnabled = v; return this; }
         public Builder locationTier(LocationTier v) { this.locationTier = v; return this; }
 
