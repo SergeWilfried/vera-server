@@ -99,6 +99,14 @@ records inter-key timing, never the characters typed.
   the bank a stale token. Resolves to `''` if the SDK isn't initialised or the
   collector couldn't mint — pass `debug: true` to `init()` to log why.
 - `FraudSdk.captureKeystrokes(el, fieldId)` — opt-in keystroke dynamics.
+- `FraudSdk.showIntervention(decision, opts?)` — drop-in intervention UI for a
+  `/v1/score` decision: `SCAM_WARNING` shows the coached-fraud warning (Cancel
+  primary / Continue), `IDENTITY` a one-time-code sheet verified by YOUR
+  backend via `opts.onVerify(code)`, `HOLD` the payment-held notice. Outcomes
+  are reported to the platform automatically (`BIZ_STEP_UP_RESULT` +
+  `BIZ_INTERVENTION_RESULT`), so the step-up scoring signals work with zero
+  extra wiring. Resolves `{action}` ∈ NONE · CANCELLED · ACKNOWLEDGED ·
+  VERIFIED · CLOSED. Localized: `opts.locale: 'en' | 'fr'`.
 - `FraudSdk.flush()` — force-upload the queue (e.g. right before a `/score`).
 - `FraudSdk.onLocalRisk(cb)` — subscribe to locally-known risk (`{ level, reasons }`); fires immediately and on every change, so the host app can raise an anti-scam banner with no server round-trip.
 - `FraudSdk.reportRemoteAccess(active)` — a native/webview shell reports screen-share / remote-control it detected (e.g. an Android `VirtualDisplay` from AnyDesk); raises local risk **and** emits `PASSIVE_REMOTE_ACCESS` so the server scores `REMOTE_ACCESS`.

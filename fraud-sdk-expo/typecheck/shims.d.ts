@@ -3,7 +3,19 @@
 // These mirror just the surface the SDK uses; the shipped package resolves the
 // real types from the consumer's node_modules. NOT included by tsconfig.json.
 
+declare module 'react' {
+  export type ReactNode = unknown;
+  export function useState<T>(initial: T | (() => T)): [T, (v: T | ((prev: T) => T)) => void];
+  export function createElement(type: unknown, props?: unknown, ...children: unknown[]): unknown;
+}
+
 declare module 'react-native' {
+  export const View: unknown;
+  export const Text: unknown;
+  export const Pressable: unknown;
+  export const TextInput: unknown;
+  export const Modal: unknown;
+  export const StyleSheet: { create<T>(styles: T): T };
   export interface NativeKeyPressEvent {
     nativeEvent: { key: string };
   }

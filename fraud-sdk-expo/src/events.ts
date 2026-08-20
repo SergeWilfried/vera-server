@@ -18,7 +18,10 @@ export const BusinessEvent = {
     currency?: string; payeeIsNew?: boolean; channel?: string;
   }): BusinessEvent => ({ type: 'BIZ_TXN_INITIATED', payload: { ...d } }),
   txnSubmitted: (txnRef: string): BusinessEvent => ({ type: 'BIZ_TXN_SUBMITTED', payload: { txnRef } }),
-  stepUpResult: (outcome: 'PASS' | 'FAIL'): BusinessEvent =>
+  stepUpResult: (outcome: 'PASS' | 'FAIL' | 'ABANDONED'): BusinessEvent =>
     ({ type: 'BIZ_STEP_UP_RESULT', payload: { outcome } }),
+  /** How the customer resolved an intervention sheet (audit trail). */
+  interventionResult: (intervention: string, action: string): BusinessEvent =>
+    ({ type: 'BIZ_INTERVENTION_RESULT', payload: { intervention, action } }),
   logout: (): BusinessEvent => ({ type: 'BIZ_LOGOUT', payload: {} }),
 };

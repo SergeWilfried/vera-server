@@ -18,6 +18,12 @@ import { attachMouse } from './collectors/mouse.js';
 import { attachKeystrokes } from './collectors/keystroke.js';
 import { attachNav } from './collectors/nav.js';
 import { BusinessEvent } from './events.js';
+import {
+  showIntervention as renderIntervention,
+  type InterventionDecision,
+  type InterventionOptions,
+  type InterventionResult,
+} from './ui.js';
 
 /** Locally-known risk the host app can react to immediately, with no server
  *  round-trip — e.g. to show an anti-scam banner while a transfer is in flight. */
@@ -270,6 +276,23 @@ export const FraudSdk = {
     emitLocalRisk();
   },
 
+  /** Drop-in intervention UI for a /v1/score decision: SCAM_WARNING shows
+   *  the coached-fraud warning (Cancel primary / Continue), IDENTITY shows a
+   *  one-time-code sheet verified by YOUR backend via opts.onVerify, and
+   *  HOLD / ANALYST_REVIEW shows the payment-held notice. Outcomes are
+   *  reported to the platform automatically (BIZ_STEP_UP_RESULT +
+   *  BIZ_INTERVENTION_RESULT). Resolves with how the customer dismissed it;
+   *  {action: 'NONE'} for ALLOW. Localized via opts.locale ('en' | 'fr'). */
+  showIntervention(decision: InterventionDecision | null, opts: InterventionOptions = {}): Promise<InterventionResult> {
+    return renderIntervention(decision, opts, {
+      event: (e) => sessionApi.event(e),
+      flush: () => FraudSdk.flush(),
+    }, {
+      stepUpResult: BusinessEvent.stepUpResult,
+      interventionResult: BusinessEvent.interventionResult,
+    });
+  },
+
   /** Notified when a fraud analyst terminates this session from the console
    *  (kill switch). The SDK has already unbound the user and rotated its
    *  session; the host app should force logout and invalidate its own auth
@@ -304,3 +327,4 @@ export const FraudSdk = {
 
 export { BusinessEvent };
 export type { SdkConfig, SdkEvent };
+export type { InterventionDecision, InterventionOptions, InterventionResult, InterventionAction } from './ui.js';

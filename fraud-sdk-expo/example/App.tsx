@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import Constants from 'expo-constants';
-import { FraudSdk, BusinessEvent, type LocalRisk } from '@veratools/fraud-sdk-expo';
+import { FraudSdk, BusinessEvent, InterventionSheet, type LocalRisk } from '@veratools/fraud-sdk-expo';
 
 // Dev : joindre la machine de dev depuis le simulateur/appareil via l'IP hôte de
 // Metro. Build déployé : EXPO_PUBLIC_COLLECTOR_URL (et éventuellement
@@ -326,7 +326,6 @@ export default function App() {
 }
 
 function Outcome({ d, amount, onDone, onBalance }: { d: Decision; amount: number; onDone: () => void; onBalance: (n: number) => void }) {
-  const [otp, setOtp] = useState('');
   const [done, setDone] = useState<null | string>(null);
   if (done) {
     return (
@@ -348,44 +347,26 @@ function Outcome({ d, amount, onDone, onBalance }: { d: Decision; amount: number
       </Card>
     );
   }
-  if (d.decision === 'STEP_UP') {
-    // Step-up « arnaque APP » : un défi d'identité est inutile — la victime EST le
-    // titulaire et le réussit. On montre plutôt une friction anti-arnaque :
-    // avertir du coaching et exiger un acquittement explicite.
-    if (d.intervention === 'SCAM_WARNING') {
-      return (
-        <Card center>
-          <Badge color={C.warn} icon="📵" />
-          <Text style={styles.h2}>Quelqu’un vous aide-t-il pour ce paiement ?</Text>
-          <Text style={styles.sub}>
-            Ce virement correspond au schéma des paiements frauduleux — un appelant qui vous guide pour envoyer
-            de l’argent vers un « compte sécurisé ». Personne de Demo Bank ne vous demandera jamais cela. Si on
-            vous a demandé de faire ce paiement, arrêtez maintenant.
-          </Text>
-          <Btn label="Annuler — ça ne me semble pas normal" onPress={onDone} />
-          <Btn label="Personne ne me l’a demandé — continuer" ghost
-            onPress={() => { onBalance(amount); setDone('Paiement envoyé après acquittement de l’avertissement.'); }} />
-        </Card>
-      );
-    }
+  if (d.decision === 'STEP_UP' || d.decision === 'HOLD') {
+    // Le kit d'intervention du SDK affiche l'écran adapté (avertissement
+    // anti-arnaque, code à usage unique, ou paiement suspendu) et rapporte
+    // l'issue à la plateforme (BIZ_STEP_UP_RESULT / BIZ_INTERVENTION_RESULT).
     return (
       <Card center>
-        <Badge color={C.warn} icon="↑" />
-        <Text style={styles.h2}>Vérification supplémentaire requise</Text>
-        <Text style={styles.sub}>Ce virement semble inhabituel — saisissez un code à usage unique.</Text>
-        <TextInput style={[styles.input, styles.otp]} value={otp} onChangeText={setOtp} placeholder="••••••" keyboardType="number-pad" maxLength={6} />
-        <Btn label="Vérifier et envoyer" onPress={() => { onBalance(amount); setDone('Vérifié — le paiement est en cours d’envoi.'); }} />
-        <Btn label="Retour au compte" ghost onPress={onDone} />
-      </Card>
-    );
-  }
-  if (d.decision === 'HOLD') {
-    return (
-      <Card center>
-        <Badge color={C.stop} icon="!" />
-        <Text style={styles.h2}>Paiement mis en attente</Text>
-        <Text style={styles.sub}>Suspendu pour contrôle de sécurité — aucun montant n’a quitté votre compte.</Text>
-        <Btn label="Retour au compte" ghost onPress={onDone} />
+        <Badge color={d.decision === 'HOLD' ? C.stop : C.warn} icon="…" />
+        <Text style={styles.h2}>Vérification Verawall</Text>
+        <InterventionSheet
+          decision={d}
+          bankName="Demo Bank"
+          locale="fr"
+          accentColor="#0A5BD3"
+          onVerify={async (code) => code.length === 6 /* démo : la banque vérifierait côté serveur */}
+          onResult={(r) => {
+            if (r.action === 'VERIFIED') { onBalance(amount); setDone('Vérifié — le paiement est en cours d’envoi.'); }
+            else if (r.action === 'ACKNOWLEDGED') { onBalance(amount); setDone('Paiement envoyé après acquittement de l’avertissement.'); }
+            else onDone(); // CANCELLED / CLOSED — rien n'a quitté le compte
+          }}
+        />
       </Card>
     );
   }

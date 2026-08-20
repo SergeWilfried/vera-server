@@ -139,6 +139,15 @@ FraudSdk.reportRemoteAccess(true); // → local banner + PASSIVE_REMOTE_ACCESS
   the bound user changed, so long-lived app sessions never hand the bank a stale
   token. Resolves to `''` if the SDK isn't initialised or the collector couldn't
   mint (logged in `__DEV__`).
+- `<InterventionSheet decision={verdict} … />` — drop-in intervention UI for a
+  `/v1/score` decision: `SCAM_WARNING` shows the coached-fraud warning (Cancel
+  primary / Continue — the victim IS the owner, so this is friction they must
+  read, not a challenge they would pass), `IDENTITY` a one-time-code sheet
+  verified by YOUR backend via `onVerify(code)`, `HOLD` the payment-held
+  notice. Outcomes are reported to the platform automatically
+  (`BIZ_STEP_UP_RESULT` + `BIZ_INTERVENTION_RESULT`), so the step-up scoring
+  signals work with zero extra wiring. `onResult({action})` fires with
+  CANCELLED · ACKNOWLEDGED · VERIFIED · CLOSED. Localized: `locale: 'en' | 'fr'`.
 - `FraudSdk.trackInput(fieldId)` — props to spread onto a `<TextInput>`.
 - `FraudSdk.touch()` — `{ panHandlers, flush }` for a wrapping `<View>`.
 - `FraudSdk.onLocalRisk(cb)` — subscribe to local risk (screen-share); no server hop.

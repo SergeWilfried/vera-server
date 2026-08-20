@@ -270,19 +270,32 @@ async function sendTransfer(preset) {
   }).then((r) => r.json());
 
   vwDecision(decision);
-  showOutcome(decision, amount);
+  await showOutcome(decision, amount);
 }
 
-function showOutcome(d, amount) {
-  const band = d.decision;
-  if (band === 'ALLOW') {
+async function showOutcome(d, amount) {
+  if (d.decision === 'ALLOW') {
     state.balance -= amount;
     outcomeCard('✓', 'var(--ok)', 'Payment sent', `${fmt(amount)} CZK is on its way. No extra checks needed.`);
-  } else if (band === 'STEP_UP') {
-    outcomeStepUp(amount);
+    return;
+  }
+  // Everything non-ALLOW goes through the SDK's drop-in intervention sheet:
+  // SCAM_WARNING / IDENTITY / HOLD are rendered (and their outcomes reported
+  // back to the platform) by the kit — the bank only handles the result.
+  const r = await FraudSdk.showIntervention(d, {
+    bankName: 'Demo Bank',
+    onVerify: async (code) => code.length === 6, // demo: the bank's backend would verify
+  });
+  if (r.action === 'VERIFIED') {
+    state.balance -= amount;
+    outcomeCard('✓', 'var(--ok)', 'Payment sent', `Verified. ${fmt(amount)} CZK is on its way.`);
+  } else if (r.action === 'ACKNOWLEDGED') {
+    state.balance -= amount;
+    outcomeCard('✓', 'var(--ok)', 'Payment sent', `${fmt(amount)} CZK sent after the warning was acknowledged.`);
   } else {
-    outcomeCard('!', 'var(--stop)', 'Payment held for review',
-      'This transfer was paused for a security review. Our fraud team will be in touch — no money has left your account.');
+    // CANCELLED / CLOSED — nothing left the account.
+    state.screen = 'dashboard';
+    render();
   }
 }
 
@@ -296,16 +309,6 @@ function outcomeCard(icon, color, title, msg, extra = '') {
       <button class="btn ghost" id="done" style="max-width:220px;margin:22px auto 0">Back to account</button>
     </div>`;
   $('done').onclick = () => { state.screen = 'dashboard'; render(); };
-}
-
-function outcomeStepUp(amount) {
-  outcomeCard('↑', 'var(--warn)', 'Extra verification needed',
-    'This transfer looks unusual, so we need a one-time code before it goes through.',
-    `<div style="max-width:220px;margin:16px auto 0"><input id="otp" class="otp" maxlength="6" placeholder="••••••" /><button class="btn" id="verify" style="margin-top:10px">Verify & send</button></div>`);
-  $('verify').onclick = () => {
-    state.balance -= amount;
-    outcomeCard('✓', 'var(--ok)', 'Payment sent', `Verified. ${fmt(amount)} CZK is on its way.`);
-  };
 }
 
 // ---------- boot ----------

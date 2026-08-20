@@ -4,7 +4,8 @@
     "strict": true,
     "baseUrl": ".",
     "paths": {
-      "@veratools/fraud-sdk-expo": ["../src/index.ts"]
+      "@veratools/fraud-sdk-expo": ["../src/index.ts"],
+      "react": ["./node_modules/@types/react"]
     }
   },
   "include": ["**/*.ts", "**/*.tsx"]

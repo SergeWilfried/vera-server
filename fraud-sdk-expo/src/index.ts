@@ -39,6 +39,7 @@ import {
   type ScreenshotWatch,
 } from './collectors/screenCapture';
 import { BusinessEvent } from './events';
+import { _setReporter } from './ui/InterventionSheet';
 
 interface State {
   cfg: Required<SdkConfig>;
@@ -254,6 +255,8 @@ export const FraudSdk = {
       if (s === 'background' || s === 'inactive') void transport.flush();
     });
     state = { cfg, installId, sessionId: newId(), tokenMintedAt: 0, transport, risk, touch, watch, callWatch, shotWatch, appSub };
+    // The intervention sheet reports outcomes through the live session.
+    _setReporter({ event: (e) => sessionApi.event(e), flush: () => FraudSdk.flush() });
     transport.start();
 
     enqueue('PASSIVE_DEVICE_FINGERPRINT', {
@@ -370,5 +373,12 @@ export const FraudSdk = {
 };
 
 export { BusinessEvent };
+export { InterventionSheet } from './ui/InterventionSheet';
+export type {
+  InterventionSheetProps,
+  InterventionDecision,
+  InterventionResult,
+  InterventionAction,
+} from './ui/InterventionSheet';
 export type { SdkConfig, SdkEvent, LocalRisk, CallSignals } from './types';
 export type { RemoteAccessStatus } from './collectors/remoteAccess';
