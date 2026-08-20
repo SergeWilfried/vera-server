@@ -475,6 +475,41 @@ type DecisionRecord struct {
 	Result                                  ScoreResult
 }
 
+// PayeeIntel is what alert history already knows about a payee at score
+// time. Kind "confirmed": an alert that held a payment to this payee — or
+// whose subject account IS this payee — was resolved as confirmed fraud.
+// Kind "open": such an alert is still under investigation. Empty = unknown.
+// This is the same intel the follow-the-money graph shows analysts, applied
+// at DECISION time, so one confirmed fraud protects every later customer
+// who tries to pay the same destination.
+type PayeeIntel struct {
+	Kind    string // "confirmed" | "open" | ""
+	AlertID string
+}
+
+func (s *Server) getPayeeIntel(ctx context.Context, tenantID, payeeRef string) (PayeeIntel, error) {
+	rows, err := queryMaps(ctx, s.pool,
+		`SELECT id, state FROM alerts
+		 WHERE tenant_id=$1
+		   AND (txn->>'payeeRef' = $2 OR account_ref = $2)
+		   AND (state='Open'
+		        OR (state='Resolved' AND disposition ILIKE '%fraud%'
+		            AND disposition NOT ILIKE '%false%'
+		            AND disposition NOT ILIKE '%not fraud%'))
+		 ORDER BY (state='Resolved') DESC, created_at DESC LIMIT 1`,
+		tenantID, payeeRef)
+	if err != nil || len(rows) == 0 {
+		return PayeeIntel{}, err
+	}
+	id, _ := rows[0]["id"].(string)
+	state, _ := rows[0]["state"].(string)
+	kind := "open"
+	if state == "Resolved" {
+		kind = "confirmed"
+	}
+	return PayeeIntel{Kind: kind, AlertID: id}, nil
+}
+
 func (s *Server) recordDecision(ctx context.Context, d DecisionRecord) (string, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {

@@ -175,6 +175,13 @@ ALTER TABLE alerts ADD COLUMN IF NOT EXISTS assignee      text;
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS assigned_at   timestamptz;
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS snoozed_until timestamptz;
 CREATE INDEX IF NOT EXISTS alerts_queue_idx ON alerts (tenant_id, state, created_at DESC);
+-- Payee reputation at score time: /v1/score checks whether the transaction's
+-- payee already appears in a held payment (txn->>'payeeRef') or as the
+-- subject account of an alert — so one confirmed fraud protects every later
+-- customer who tries to pay the same destination.
+CREATE INDEX IF NOT EXISTS alerts_payee_idx
+  ON alerts (tenant_id, (txn->>'payeeRef')) WHERE txn ? 'payeeRef';
+CREATE INDEX IF NOT EXISTS alerts_account_idx ON alerts (tenant_id, account_ref);
 
 CREATE TABLE IF NOT EXISTS cases (
   id          text PRIMARY KEY,             -- C-1001, C-1002, ...

@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -100,6 +101,19 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Device leg of the action channel: hand pending terminate commands
 	// for these sessions back to the SDK in the batch response.
+	out := s.deviceCommandLeg(ctx, tenantID, events)
+	// accepted = events stored; duplicates = resent events already on file
+	// (same contract as /v1/transactions).
+	writeJSON(w, 200, map[string]any{
+		"accepted": stored, "duplicates": len(events) - stored, "commands": out})
+}
+
+// deviceCommandLeg returns pending terminate commands targeting any session
+// in this batch, marking them delivered — the device leg of the action
+// channel, shared by /v1/events (HMAC SDKs) and /v1/collect (site-key SDKs).
+// Degrades to no commands on a store error: the batch was already committed,
+// and an undelivered command simply rides the next upload beat.
+func (s *Server) deviceCommandLeg(ctx context.Context, tenantID string, events []IngestEvent) []map[string]any {
 	seen := map[string]bool{}
 	sessionIDs := []string{}
 	for _, ev := range events {
@@ -108,13 +122,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			sessionIDs = append(sessionIDs, ev.SessionID)
 		}
 	}
+	out := []map[string]any{}
 	commands, err := s.pendingDeviceCommands(ctx, tenantID, sessionIDs)
 	if err != nil {
 		log.Printf("pendingDeviceCommands: %v", err)
-		writeJSON(w, 500, map[string]any{"error": "internal"})
-		return
+		return out
 	}
-	out := []map[string]any{}
 	ids := []string{}
 	for _, c := range commands {
 		id, _ := c["id"].(string)
@@ -131,10 +144,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if err := s.markDeviceDelivered(ctx, ids); err != nil {
 		log.Printf("markDeviceDelivered: %v", err)
 	}
-	// accepted = events stored; duplicates = resent events already on file
-	// (same contract as /v1/transactions).
-	writeJSON(w, 200, map[string]any{
-		"accepted": stored, "duplicates": len(events) - stored, "commands": out})
+	return out
 }
 
 // ---------- POST /v1/transactions ----------
@@ -326,6 +336,13 @@ func (s *Server) handleScore(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 500, map[string]any{"error": "internal"})
 			return
 		}
+		intel, err := s.getPayeeIntel(ctx, payload.Tenant, txn.PayeeRef)
+		if err != nil {
+			log.Printf("getPayeeIntel: %v", err)
+			writeJSON(w, 500, map[string]any{"error": "internal"})
+			return
+		}
+		sc.PayeeIntelKind, sc.PayeeIntelAlert = intel.Kind, intel.AlertID
 	}
 	result := scoreSession(sc, txn)
 

@@ -79,6 +79,11 @@ type ScoringCtx struct {
 	// Prior scored amounts to txn.PayeeRef, most recent first, resolved by
 	// the handler when the txn carries a payeeRef. Feeds ESCALATING_PAYEE.
 	PayeePriorAmounts []float64
+	// Payee reputation, resolved by the handler when the txn carries a
+	// payeeRef: "confirmed" | "open" | "" plus the source alert id. Feeds
+	// KNOWN_MULE_PAYEE / PAYEE_UNDER_INVESTIGATION.
+	PayeeIntelKind  string
+	PayeeIntelAlert string
 	// Per-tenant, per-currency "high amount, no history" cutoff, resolved for
 	// txn.Currency by the handler. <=0 means unset -> fall back to the global
 	// default (see highAmountCutoff). The history-based AMOUNT_ABOVE_PROFILE
@@ -488,6 +493,22 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 		add("ESCALATING_PAYEE", "Rising payments to the same payee", 35,
 			fmt.Sprintf("%.0f after %.0f after %.0f to payee %s",
 				txn.Amount, p[0], p[1], trunc(txn.PayeeRef, 12)))
+	}
+
+	// --- payee reputation (network memory) --------------------------------
+	// The follow-the-money graph classifies counterparties for analysts;
+	// this is the same intel applied at decision time. A destination already
+	// held in a confirmed-fraud case warns/holds every LATER customer on
+	// their first attempt — the "second victim" property. A destination in a
+	// still-open alert only tips borderline sessions (investigation is not
+	// conviction).
+	switch ctx.PayeeIntelKind {
+	case "confirmed":
+		add("KNOWN_MULE_PAYEE", "Payee confirmed as a fraud destination", 55,
+			"payee "+trunc(txn.PayeeRef, 12)+" held in confirmed-fraud case "+ctx.PayeeIntelAlert)
+	case "open":
+		add("PAYEE_UNDER_INVESTIGATION", "Payee linked to an open fraud alert", 30,
+			"payee "+trunc(txn.PayeeRef, 12)+" matches open alert "+ctx.PayeeIntelAlert)
 	}
 
 	hist := []float64{}
@@ -965,7 +986,7 @@ func finish(signals []Signal, ctx *ScoringCtx) ScoreResult {
 	// Call-shaped coaching, or the chat-shaped tells: cross-session payment
 	// escalation, or details pasted from a chat while paying someone new.
 	// Both must reach SCAM_WARNING (not an identity challenge).
-	case has("ESCALATING_PAYEE") ||
+	case has("KNOWN_MULE_PAYEE") || has("ESCALATING_PAYEE") ||
 		(has("PASTE_INPUT") && has("NEW_PAYEE")) ||
 		((has("ACTIVE_CALL") || has("RECENT_CALL") || has("RUSHED_NEW_PAYEE")) &&
 			(has("NEW_PAYEE") || has("AMOUNT_ABOVE_PROFILE") || has("HIGH_AMOUNT"))):

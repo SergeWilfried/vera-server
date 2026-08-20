@@ -12,7 +12,7 @@
 
 import type { SdkConfig, SdkEvent } from './types.js';
 import { getInstall, randomId } from './session.js';
-import { Transport } from './transport.js';
+import { Transport, type ServerCommand } from './transport.js';
 import { fingerprint } from './collectors/fingerprint.js';
 import { attachMouse } from './collectors/mouse.js';
 import { attachKeystrokes } from './collectors/keystroke.js';
@@ -43,6 +43,7 @@ interface State {
   headless: boolean;
   remoteActive: boolean;
   riskCb?: (r: LocalRisk) => void;
+  terminatedCb?: (sessionId: string) => void;
 }
 
 let state: State | null = null;
@@ -125,6 +126,7 @@ function refreshToken(): Promise<void> {
   if (state.tokenInflight) return state.tokenInflight;
   const s = state;
   const userRef = s.userRef;
+  const sessionId = s.sessionId;
   let done = false;
   const p = (async () => {
     try {
@@ -132,11 +134,14 @@ function refreshToken(): Promise<void> {
         method: 'POST',
         headers: { 'Content-Type': 'application/json',
                    'X-Tenant-Id': s.cfg.tenantId, 'X-Site-Key': s.cfg.siteKey },
-        body: JSON.stringify({ sessionId: s.sessionId, installId: s.installId, userRef }),
+        body: JSON.stringify({ sessionId, installId: s.installId, userRef }),
       });
       if (res.ok) {
         const token = (await res.json())?.token;
         if (typeof token === 'string' && token) {
+          // Only cache if the session hasn't rotated while we were minting
+          // (logout or a server kill switch invalidates the old session).
+          if (s.sessionId !== sessionId) return;
           s.token = token;
           s.tokenUserRef = userRef;
           s.tokenMintedAt = Date.now();
@@ -164,6 +169,32 @@ async function ensureToken(): Promise<string> {
   return state && tokenUsable() ? state.token! : '';
 }
 
+// Server-issued commands (the action channel's device leg). TERMINATE_SESSION
+// is the analyst kill switch: ack inside the dying session, unbind the user,
+// rotate the session id (invalidating future tokens for the killed session),
+// then notify the host app so it can force logout — the same semantics as the
+// Android SDK. Commands for a session other than the current one are stale.
+function handleServerCommands(commands: ServerCommand[]): void {
+  if (!state) return;
+  for (const cmd of commands) {
+    if (cmd.kind !== 'TERMINATE_SESSION') continue;
+    const current = state.sessionId;
+    if (cmd.sessionId && cmd.sessionId !== current) continue; // stale
+    enqueue('PASSIVE_COMMAND_ACK', { commandId: cmd.id, kind: 'TERMINATE_SESSION' });
+    state.userRef = undefined;
+    state.sessionId = randomId();
+    state.token = undefined;
+    state.tokenUserRef = undefined;
+    state.tokenMintedAt = 0;
+    void refreshToken();
+    try {
+      state.terminatedCb?.(current);
+    } catch {
+      /* host callback must never break the SDK */
+    }
+  }
+}
+
 export const FraudSdk = {
   /** Call once on app start. Idempotent. */
   init(config: SdkConfig): void {
@@ -183,6 +214,7 @@ export const FraudSdk = {
     const fp = fingerprint();
     state = { cfg, installId, sessionId, tokenMintedAt: 0, transport, detach: [],
               headless: fp.headless, remoteActive: false };
+    transport.onCommands = handleServerCommands;
     transport.start();
 
     // Passive capture.
@@ -236,6 +268,15 @@ export const FraudSdk = {
       });
     }
     emitLocalRisk();
+  },
+
+  /** Notified when a fraud analyst terminates this session from the console
+   *  (kill switch). The SDK has already unbound the user and rotated its
+   *  session; the host app should force logout and invalidate its own auth
+   *  tokens. Arrives within one flush interval. Defense in depth — never the
+   *  only logout path. */
+  onSessionTerminated(cb: (sessionId: string) => void): void {
+    if (state) state.terminatedCb = cb;
   },
 
   /** Force-upload queued events (e.g. right before a critical API call). */

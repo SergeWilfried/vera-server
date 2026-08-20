@@ -8,10 +8,20 @@ import type { SdkConfig, SdkEvent } from '../types';
 type TransportCfg = Required<Pick<SdkConfig, 'tenantId' | 'siteKey' | 'collectorUrl'>> &
   Pick<SdkConfig, 'sdk'> & { flushIntervalMs: number };
 
+/** Server-issued command riding a batch response (the action channel's
+ *  device leg) — e.g. an analyst kill switch. */
+export interface ServerCommand {
+  id?: string;
+  kind?: string;
+  sessionId?: string;
+}
+
 export class Transport {
   private queue: SdkEvent[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly base: string;
+  /** Set by the SDK: invoked with any commands the server returns. */
+  onCommands?: (commands: ServerCommand[]) => void;
 
   constructor(
     private cfg: TransportCfg,
@@ -56,11 +66,21 @@ export class Transport {
     if (this.queue.length === 0) return;
     const batch = this.queue.splice(0, this.queue.length);
     try {
-      await fetch(this.base + '/v1/collect', {
+      const res = await fetch(this.base + '/v1/collect', {
         method: 'POST',
         headers: this.headers(),
         body: this.ndjson(batch),
       });
+      // The batch response may carry server commands (analyst kill switch).
+      // Parse defensively — a malformed body must never break the upload loop.
+      if (res.ok && this.onCommands) {
+        try {
+          const data = (await res.json()) as { commands?: ServerCommand[] } | null;
+          if (data?.commands?.length) this.onCommands(data.commands);
+        } catch {
+          /* no JSON body — fine */
+        }
+      }
     } catch {
       // best-effort telemetry: re-queue a bounded tail for the next tick
       this.queue = batch.slice(-100).concat(this.queue);

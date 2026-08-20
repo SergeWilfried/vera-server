@@ -16,7 +16,7 @@
 
 import { AppState, type AppStateStatus } from 'react-native';
 import type { SdkConfig, SdkEvent, LocalRisk, CallSignals } from './types';
-import { Transport } from './wire/transport';
+import { Transport, type ServerCommand } from './wire/transport';
 import { RiskTracker } from './core/risk';
 import { newId, hash as sha256 } from './platform/crypto';
 import { getInstall } from './platform/storage';
@@ -59,6 +59,7 @@ interface State {
   callWatch: CallSignalsWatch;
   shotWatch: ScreenshotWatch;
   screenshotCb?: () => void;
+  terminatedCb?: (sessionId: string) => void;
   appSub: { remove(): void };
 }
 
@@ -99,6 +100,7 @@ function refreshToken(): Promise<void> {
   if (state.tokenInflight) return state.tokenInflight;
   const s = state;
   const userRef = s.userRef;
+  const sessionId = s.sessionId;
   let done = false;
   const p = (async () => {
     try {
@@ -109,11 +111,14 @@ function refreshToken(): Promise<void> {
           'X-Tenant-Id': s.cfg.tenantId,
           'X-Site-Key': s.cfg.siteKey,
         },
-        body: JSON.stringify({ sessionId: s.sessionId, installId: s.installId, userRef }),
+        body: JSON.stringify({ sessionId, installId: s.installId, userRef }),
       });
       if (res.ok) {
         const token = (await res.json())?.token;
         if (typeof token === 'string' && token) {
+          // Only cache if the session hasn't rotated while we were minting
+          // (logout or a server kill switch invalidates the old session).
+          if (s.sessionId !== sessionId) return;
           s.token = token;
           s.tokenUserRef = userRef;
           s.tokenMintedAt = Date.now();
@@ -164,6 +169,33 @@ function onScreenshot(): void {
   state.screenshotCb?.();
 }
 
+// Server-issued commands (the action channel's device leg). TERMINATE_SESSION
+// is the analyst kill switch: ack inside the dying session, unbind the user,
+// rotate the session id (invalidating future tokens for the killed session),
+// then notify the host app so it can force logout — the same semantics as the
+// Android SDK. Commands for a session other than the current one are stale
+// (the session already rotated) and are ignored.
+function handleServerCommands(commands: ServerCommand[]): void {
+  if (!state) return;
+  for (const cmd of commands) {
+    if (cmd.kind !== 'TERMINATE_SESSION') continue;
+    const current = state.sessionId;
+    if (cmd.sessionId && cmd.sessionId !== current) continue; // stale
+    enqueue('PASSIVE_COMMAND_ACK', { commandId: cmd.id, kind: 'TERMINATE_SESSION' });
+    state.userRef = undefined;
+    state.sessionId = newId();
+    state.token = undefined;
+    state.tokenUserRef = undefined;
+    state.tokenMintedAt = 0;
+    void refreshToken();
+    try {
+      state.terminatedCb?.(current);
+    } catch {
+      /* host callback must never break the SDK */
+    }
+  }
+}
+
 const sessionApi = {
   /** Bind a (hashed) identity. Resolves once a token for this user has been
    *  minted (or the mint failed) — await it before getToken() when you need
@@ -212,6 +244,7 @@ export const FraudSdk = {
     const install = await getInstall();
     const installId = install.id;
     const transport = new Transport(cfg, installId, newId);
+    transport.onCommands = handleServerCommands;
     const risk = new RiskTracker();
     const touch = createTouchCapture(enqueue);
     const watch = createRemoteAccessWatch(cfg.remoteAccessPollMs, applyRemoteAccess);
@@ -300,6 +333,15 @@ export const FraudSdk = {
    *  "don't share screenshots of your account" warning. */
   onScreenshot(cb: () => void): void {
     if (state) state.screenshotCb = cb;
+  },
+
+  /** Notified when a fraud analyst terminates this session from the console
+   *  (kill switch). The SDK has already unbound the user and rotated its
+   *  session; the host app should force logout and invalidate its own auth
+   *  tokens. Arrives within one flush interval. Defense in depth — never the
+   *  only logout path. */
+  onSessionTerminated(cb: (sessionId: string) => void): void {
+    if (state) state.terminatedCb = cb;
   },
 
   /** Force-upload queued events (flushes touch strokes first). Call right before

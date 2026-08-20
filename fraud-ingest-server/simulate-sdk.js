@@ -1030,6 +1030,156 @@ const scenarios = {
     }
   },
 
+  /** Score-time payee reputation (Go server only): once one victim's held
+   *  payment to a payee is confirmed as fraud, every LATER customer who pays
+   *  the same payee is warned on their FIRST attempt (KNOWN_MULE_PAYEE,
+   *  APP Scam -> SCAM_WARNING). While the first alert is merely Open, the
+   *  signal is advisory only (PAYEE_UNDER_INVESTIGATION, stays ALLOW), and
+   *  an innocent payee is untouched. */
+  async payee() {
+    const H = { 'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + (process.env.CONSOLE_KEY || 'dev-console-key') };
+    const scamPayee = crypto.createHash('sha256')
+      .update('salt+mule+' + crypto.randomUUID()).digest('hex');
+
+    // Clean session shell for an established user (known device, no call).
+    const cleanSession = (u, t0) => {
+      const sid = crypto.randomUUID();
+      return { sessionId: sid, events: [
+        { type: 'PASSIVE_LOCATION_COARSE', sessionId: sid, installId: u.install, ts: t0,
+          payload: { tier: 'GEOHASH5', geohash: u.geohash, ageMs: 30000 } },
+        { type: 'BIZ_LOGIN_RESULT', sessionId: sid, installId: u.install, userRef: u.ref,
+          ts: t0 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+        { type: 'PASSIVE_TOUCH_STROKES', sessionId: sid, installId: u.install, userRef: u.ref,
+          ts: t0 + 45000, payload: { strokes: strokes(10, u.dur, u.gap) } },
+        { type: 'BIZ_TXN_INITIATED', sessionId: sid, installId: u.install, userRef: u.ref,
+          ts: t0 + 90000, callSignals: noCall,
+          payload: { amountBucket: 'LOW', currency: 'CZK', payeeIsNew: true, channel: 'P2P' } },
+      ] };
+    };
+
+    // Victim A: established user, coached transfer to the scam payee -> HOLD.
+    const a = newUser();
+    await buildHistory(a, [40, 20, 6], [4000, 4600, 5100]);
+    const t0 = Date.now();
+    const sidA = crypto.randomUUID();
+    const inCall = { inGsmCall: true, inVoipCall: false, speakerOn: true };
+    await sendBatch(a.install, [
+      { type: 'PASSIVE_LOCATION_COARSE', sessionId: sidA, installId: a.install, ts: t0,
+        payload: { tier: 'GEOHASH5', geohash: a.geohash, ageMs: 30000 } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: sidA, installId: a.install, userRef: a.ref,
+        ts: t0 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: inCall },
+      { type: 'BIZ_PAYEE_ADDED', sessionId: sidA, installId: a.install, userRef: a.ref,
+        ts: t0 + 60000, payload: { payeeRef: scamPayee, channel: 'BANK' }, callSignals: inCall },
+      { type: 'BIZ_TXN_INITIATED', sessionId: sidA, installId: a.install, userRef: a.ref,
+        ts: t0 + 90000, callSignals: inCall,
+        payload: { amountBucket: 'VERY_HIGH', currency: 'CZK', payeeIsNew: true, channel: 'BANK_TRANSFER' } },
+    ]);
+    const held = await sendScore(mintToken(sidA, a.install, a.ref),
+      { txnRef: 'PAYEE-A', amount: 90000, currency: 'CZK', payeeIsNew: true, payeeRef: scamPayee });
+    report('payee: first victim held', { decision: 'HOLD', threatType: 'APP Scam' }, held);
+    if (!held.alertId) { console.log('  EXPECTED an alertId'); process.exitCode = 1; return; }
+
+    // Victim C pays while the alert is merely OPEN: advisory signal, no block.
+    const c = newUser();
+    await buildHistory(c, [35, 18, 4], [4200, 4700, 5000]);
+    const hc = cleanSession(c, Date.now());
+    await sendBatch(c.install, hc.events);
+    const during = await sendScore(mintToken(hc.sessionId, c.install, c.ref),
+      { txnRef: 'PAYEE-C', amount: 4600, currency: 'CZK', payeeIsNew: true, payeeRef: scamPayee });
+    report('payee: open alert is advisory', { decision: 'ALLOW' }, during);
+    const advisory = (during.signals || []).some(sg => sg.code === 'PAYEE_UNDER_INVESTIGATION');
+
+    // Analyst confirms victim A's alert as fraud.
+    const patched = await fetch(BASE + '/v1/console/alerts/' + held.alertId, {
+      method: 'PATCH', headers: H,
+      body: JSON.stringify({ state: 'Resolved', disposition: 'Confirmed fraud — APP scam' }),
+    });
+    if (patched.status !== 200) { console.log('  console PATCH -> ' + patched.status); process.exitCode = 1; return; }
+
+    // Victim B: clean session, normal amount — the payee alone must warn.
+    const b = newUser();
+    await buildHistory(b, [30, 15, 3], [3900, 4500, 4800]);
+    const hb = cleanSession(b, Date.now());
+    await sendBatch(b.install, hb.events);
+    const got = await sendScore(mintToken(hb.sessionId, b.install, b.ref),
+      { txnRef: 'PAYEE-B', amount: 4800, currency: 'CZK', payeeIsNew: true, payeeRef: scamPayee });
+    report('payee: second victim warned first try', { decision: 'STEP_UP', threatType: 'APP Scam' }, got);
+    const known = (got.signals || []).some(sg => sg.code === 'KNOWN_MULE_PAYEE');
+    const warn = got.intervention === 'SCAM_WARNING';
+
+    // Control: same user paying an innocent new payee stays ALLOW.
+    const hb2 = cleanSession(b, Date.now());
+    await sendBatch(b.install, hb2.events);
+    const ctrl = await sendScore(mintToken(hb2.sessionId, b.install, b.ref),
+      { txnRef: 'PAYEE-B2', amount: 4700, currency: 'CZK', payeeIsNew: true, payeeRef: 'PAYEE-INNOCENT' });
+    report('payee: innocent payee untouched', { decision: 'ALLOW' }, ctrl);
+
+    if (!advisory || !known || !warn) {
+      console.log(`  DETAIL advisory-fired=${advisory} known-mule-fired=${known} intervention=${got.intervention}`);
+      process.exitCode = 1;
+    }
+  },
+
+  /** Kill switch over /v1/collect (Go server only): browser / React Native
+   *  sessions upload via the site-key path — a TERMINATE_SESSION action must
+   *  ride the collect batch response exactly as it rides /v1/events, be
+   *  delivered once, and the SDK's ack must land in the session's events. */
+  async killcollect() {
+    const H = { 'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + (process.env.CONSOLE_KEY || 'dev-console-key') };
+    const u = newUser();
+    await buildWebHistory(u, [21, 9, 2], [4000, 4400, 4800]);
+
+    // A live web session that earns a HOLD (coached, via the collect path).
+    const sid = crypto.randomUUID();
+    const t0 = Date.now();
+    const inCall = { inGsmCall: true, inVoipCall: false, speakerOn: true };
+    await sendCollect(u.install, [
+      { type: 'BIZ_LOGIN_RESULT', sessionId: sid, installId: u.install, userRef: u.ref,
+        ts: t0 + 1000, payload: { outcome: 'SUCCESS' }, callSignals: inCall },
+      { type: 'BIZ_PAYEE_ADDED', sessionId: sid, installId: u.install, userRef: u.ref,
+        ts: t0 + 30000, payload: { payeeRef: 'KW-PAYEE', channel: 'BANK' }, callSignals: inCall },
+      { type: 'BIZ_TXN_INITIATED', sessionId: sid, installId: u.install, userRef: u.ref,
+        ts: t0 + 60000, callSignals: inCall,
+        payload: { amountBucket: 'VERY_HIGH', currency: 'CZK', payeeIsNew: true, channel: 'BANK_TRANSFER' } },
+    ]);
+    const held = await sendScore(await collectToken(sid, u.install, u.ref),
+      { txnRef: 'KW-1', amount: 120000, currency: 'CZK', payeeIsNew: true });
+    if (held.decision !== 'HOLD' || !held.alertId) {
+      console.log(`\n✗ killcollect: expected HOLD+alert, got ${held.decision} (${held.riskScore})`);
+      process.exitCode = 1; return;
+    }
+
+    // Analyst pulls the kill switch.
+    const act = await (await fetch(BASE + '/v1/console/alerts/' + held.alertId + '/actions', {
+      method: 'POST', headers: H, body: JSON.stringify({ kind: 'TERMINATE_SESSION' }),
+    })).json();
+    const cmdId = act.id;
+
+    // Next collect beat: the command must ride the response — exactly once.
+    const beat = (n) => [{ type: 'SCREEN_VIEWED', sessionId: sid, installId: u.install,
+      userRef: u.ref, ts: Date.now(), payload: { screenId: 'beat-' + n } }];
+    const r1 = await sendCollect(u.install, beat(1));
+    const cmd = (r1.commands || []).find(cm => cm.kind === 'TERMINATE_SESSION');
+    const r2 = await sendCollect(u.install, beat(2));
+    const again = (r2.commands || []).some(cm => cm.kind === 'TERMINATE_SESSION');
+
+    // SDK ack (what the web/expo SDKs now send before rotating the session).
+    await sendCollect(u.install, [{ type: 'PASSIVE_COMMAND_ACK', sessionId: sid,
+      installId: u.install, ts: Date.now(),
+      payload: { commandId: cmdId, kind: 'TERMINATE_SESSION' } }]);
+    const sessEvents = await (await fetch(BASE + '/v1/console/sessions/' + sid + '/events',
+      { headers: H })).json();
+    const ack = (sessEvents || []).find(e => e.type === 'PASSIVE_COMMAND_ACK');
+
+    const ok = !!cmd && cmd.id === cmdId && cmd.sessionId === sid && !again &&
+      ack?.payload?.commandId === cmdId;
+    console.log(`\n${ok ? '✓' : '✗'} killcollect: cmd on beat1=${cmd ? 1 : 0} beat2=${again ? 1 : 0} ` +
+        `id-match=${cmd ? cmd.id === cmdId : false} ack=${ack ? ack.payload.commandId : 'none'}`);
+    if (!ok) process.exitCode = 1;
+  },
+
   /** Idempotent /v1/score (Go server only): a bank retrying the same txnRef
    *  in the same session must get the SAME decision and alert back — never
    *  a second open alert — while a different txnRef still scores fresh. */

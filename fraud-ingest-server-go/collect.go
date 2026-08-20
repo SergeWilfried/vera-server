@@ -141,5 +141,12 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 	if dup := len(events) - stored; dup > 0 {
 		log.Printf("  ↻ %d duplicate event(s) dropped (resent batch)", dup)
 	}
-	writeJSON(w, 200, map[string]any{"accepted": stored, "duplicates": len(events) - stored})
+
+	// Device leg of the action channel — same contract as /v1/events, so the
+	// analyst kill switch reaches browser and React Native sessions too (they
+	// upload via the site-key path and were previously unreachable: their
+	// TERMINATE_SESSION actions sat 'pending' forever).
+	out := s.deviceCommandLeg(ctx, tenantID, events)
+	writeJSON(w, 200, map[string]any{
+		"accepted": stored, "duplicates": len(events) - stored, "commands": out})
 }

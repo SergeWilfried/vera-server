@@ -26,6 +26,8 @@ pass unchanged, plus the Go-only `invite` scenario:
     node simulate-sdk.js aml    http://localhost:8080   # AML file auto-open (Go only)
     node simulate-sdk.js graph  http://localhost:8080   # follow-the-money graph (Go only)
     node simulate-sdk.js esc    http://localhost:8080   # cross-session payee escalation (Go only)
+    node simulate-sdk.js payee  http://localhost:8080   # score-time payee reputation (Go only)
+    node simulate-sdk.js killcollect http://localhost:8080  # kill switch via /v1/collect (Go only)
 
 The `esc` scenario proves the `ESCALATING_PAYEE` scoring signal: two
 consecutive rising payments (>1.3x each) to the same payee — the chat-coached
@@ -36,6 +38,22 @@ a single rise and a stable recurring payee both stay ALLOW. The signal needs
 history comes from the server's own decisions, so no extra tenant feed. The
 firing condition was benchmarked on labeled synthetic traffic (+8.6pp APP-scam
 recall for +0.1pp legit flagging).
+
+The `payee` scenario proves score-time payee reputation: the intel the
+follow-the-money graph shows analysts, applied at DECISION time. One
+victim's held payment to a payee is confirmed as fraud in the console, and
+the next customer who pays the same payee — clean session, normal amount —
+is warned on their FIRST attempt (`KNOWN_MULE_PAYEE`, APP Scam →
+`SCAM_WARNING`). While the first alert is merely Open the signal is
+advisory (`PAYEE_UNDER_INVESTIGATION`, stays ALLOW), and innocent payees
+are untouched.
+
+The `killcollect` scenario proves the kill switch over `/v1/collect`:
+browser and React Native sessions upload via the site-key path, and a
+`TERMINATE_SESSION` action now rides the collect batch response exactly as
+it rides `/v1/events` — delivered once, acked by the SDK inside the dying
+session. (Previously those actions sat `pending` forever for non-Android
+sessions.)
 
 The `rat` scenario proves the `REMOTE_ACCESS` scoring signal: a known-device
 session with an active screen-share (`PASSIVE_REMOTE_ACCESS`) + scripted input
