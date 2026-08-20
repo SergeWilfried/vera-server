@@ -3,9 +3,13 @@
   "compilerOptions": {
     "strict": true,
     "baseUrl": ".",
+    // Expo's Metro honors these paths at RUNTIME as well as for types, so
+    // every target must be a real, resolvable module. Keep this map minimal:
+    // the SDK alias points at the linked source so the demo always runs the
+    // working tree. (Type-checking the SDK sources from here is not a gate —
+    // the SDK's own `npm run typecheck` / tsconfig.check.json is.)
     "paths": {
-      "@veratools/fraud-sdk-expo": ["../src/index.ts"],
-      "react": ["./node_modules/@types/react"]
+      "@veratools/fraud-sdk-expo": ["../src/index.ts"]
     }
   },
   "include": ["**/*.ts", "**/*.tsx"]
