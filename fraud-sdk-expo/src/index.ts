@@ -17,6 +17,7 @@
 import { AppState, Platform, type AppStateStatus } from 'react-native';
 import type { SdkConfig, SdkEvent, LocalRisk, CallSignals } from './types';
 import { Transport, type ServerCommand } from './wire/transport';
+import { fetchWithTimeout, DEFAULT_TIMEOUT_MS } from './wire/http';
 import { RiskTracker } from './core/risk';
 import { newId, hash as sha256 } from './platform/crypto';
 import { getInstall } from './platform/storage';
@@ -108,16 +109,20 @@ function refreshToken(): Promise<void> {
   let done = false;
   const p = (async () => {
     try {
-      const res = await fetch(s.cfg.collectorUrl.replace(/\/$/, '') + '/v1/collect/token', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Tenant-Id': s.cfg.tenantId,
-          'X-Site-Key': s.cfg.siteKey,
-          ...(s.cfg.appKey && Platform.OS !== 'web' ? { 'X-App-Key': s.cfg.appKey } : {}),
+      const res = await fetchWithTimeout(
+        s.cfg.collectorUrl.replace(/\/$/, '') + '/v1/collect/token',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Tenant-Id': s.cfg.tenantId,
+            'X-Site-Key': s.cfg.siteKey,
+            ...(s.cfg.appKey && Platform.OS !== 'web' ? { 'X-App-Key': s.cfg.appKey } : {}),
+          },
+          body: JSON.stringify({ sessionId, installId: s.installId, userRef }),
         },
-        body: JSON.stringify({ sessionId, installId: s.installId, userRef }),
-      });
+        s.cfg.timeoutMs,
+      );
       if (res.ok) {
         const token = (await res.json())?.token;
         if (typeof token === 'string' && token) {
@@ -245,6 +250,7 @@ export const FraudSdk = {
       sdk: config.sdk ?? 'expo/0.1.0',
       flushIntervalMs: config.flushIntervalMs ?? 5000,
       heartbeatMs: config.heartbeatMs ?? 30000,
+      timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       remoteAccessPollMs: config.remoteAccessPollMs ?? 4000,
       callPollMs: config.callPollMs ?? 4000,
     };

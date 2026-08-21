@@ -37,6 +37,26 @@ const APP_KEY = process.env.EXPO_PUBLIC_APP_KEY ?? 'app_wallet-acme_native';
 const DEMO_REF = 'olivia@demobank.cz';
 const PERSONA = { name: 'Awa Diallo', phone: '+225 07 88 •• 12' };
 
+// Une démo se fait souvent sur un réseau hostile, et un collecteur injoignable
+// qui accepte la connexion sans jamais répondre bloque fetch indéfiniment.
+// Mieux vaut une erreur au bout de 10 s qu'un écran figé devant un partenaire.
+const REQUEST_TIMEOUT_MS = 10_000;
+
+async function postJson(url: string, body: unknown): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 type Tone = 'ok' | 'warn' | 'stop';
 type Preset = {
   id: string; title: string; sub: string; amount: number; newPayee: boolean; rushed?: boolean;
@@ -177,19 +197,13 @@ export default function App() {
 
   async function scorePayment(token: string, amount: number, payeeNew: boolean, payeeRef: string, txnRef?: string): Promise<Decision> {
     const res = BACKEND
-      ? await fetch(`${BACKEND}/demo/pay`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token, amount, payeeNew, payeeRef }),
-        })
-      : await fetch(`${COLLECTOR}/v1/score`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionToken: token,
-            transaction: {
-              txnRef: txnRef ?? 'DEMO-' + Date.now(), amount, currency: 'XOF',
-              payeeIsNew: payeeNew, payeeRef, channel: 'BANK_TRANSFER',
-            },
-          }),
+      ? await postJson(`${BACKEND}/demo/pay`, { token, amount, payeeNew, payeeRef })
+      : await postJson(`${COLLECTOR}/v1/score`, {
+          sessionToken: token,
+          transaction: {
+            txnRef: txnRef ?? 'DEMO-' + Date.now(), amount, currency: 'XOF',
+            payeeIsNew: payeeNew, payeeRef, channel: 'BANK_TRANSFER',
+          },
         });
     return res.json();
   }

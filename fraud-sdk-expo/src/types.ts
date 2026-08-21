@@ -50,6 +50,10 @@ export interface SdkConfig {
    *  would never hear about them; this posts an empty batch at most this often
    *  to collect them. 0 disables polling. Default 30000. */
   heartbeatMs?: number;
+  /** Hard deadline for every request the SDK makes (ms). The SDK must never
+   *  hold up the host app's login when the collector is unreachable, so this
+   *  bounds the wait rather than trusting the platform socket. Default 10000. */
+  timeoutMs?: number;
   /** Poll cadence for the native screen-share watch (ms). */
   remoteAccessPollMs?: number;
   /** Poll cadence for the native in-call watch (ms). */

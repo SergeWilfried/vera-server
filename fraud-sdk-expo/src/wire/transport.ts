@@ -5,9 +5,11 @@
 
 import { Platform } from 'react-native';
 import type { SdkConfig, SdkEvent } from '../types';
+import { fetchWithTimeout } from './http';
 
 type TransportCfg = Required<Pick<SdkConfig, 'tenantId' | 'siteKey' | 'collectorUrl'>> &
-  Pick<SdkConfig, 'sdk' | 'appKey'> & { flushIntervalMs: number; heartbeatMs?: number };
+  Pick<SdkConfig, 'sdk' | 'appKey'> &
+  { flushIntervalMs: number; heartbeatMs?: number; timeoutMs?: number };
 
 const DEFAULT_HEARTBEAT_MS = 30_000;
 
@@ -87,11 +89,11 @@ export class Transport {
     if (!every || Date.now() - this.lastPostAt < every) return;
     this.lastPostAt = Date.now();
     try {
-      const res = await fetch(this.base + '/v1/collect', {
-        method: 'POST',
-        headers: this.headers(),
-        body: '',
-      });
+      const res = await fetchWithTimeout(
+        this.base + '/v1/collect',
+        { method: 'POST', headers: this.headers(), body: '' },
+        this.cfg.timeoutMs,
+      );
       if (res.ok && this.onCommands) {
         try {
           const data = (await res.json()) as { commands?: ServerCommand[] } | null;
@@ -113,11 +115,11 @@ export class Transport {
     this.lastPostAt = Date.now();
     const batch = this.queue.splice(0, this.queue.length);
     try {
-      const res = await fetch(this.base + '/v1/collect', {
-        method: 'POST',
-        headers: this.headers(),
-        body: this.ndjson(batch),
-      });
+      const res = await fetchWithTimeout(
+        this.base + '/v1/collect',
+        { method: 'POST', headers: this.headers(), body: this.ndjson(batch) },
+        this.cfg.timeoutMs,
+      );
       // The batch response may carry server commands (analyst kill switch).
       // Parse defensively — a malformed body must never break the upload loop.
       if (res.ok && this.onCommands) {
