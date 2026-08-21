@@ -367,6 +367,21 @@ export const FraudSdk = {
     if (state) state.terminatedCb = cb;
   },
 
+  /** Re-run the one-shot environment collectors (device integrity, coarse
+   *  location, SIM identity). They fire once at init; call this after the
+   *  host app gains a permission it did not have then — typically location —
+   *  so the signals reach the current session instead of waiting for the next
+   *  launch. Safe to call repeatedly; each collector degrades to a no-op when
+   *  its module is missing or permission is still absent. */
+  async refreshEnvironment(): Promise<void> {
+    if (!state) return;
+    await Promise.all([
+      reportIntegrity(enqueue),
+      reportLocation(enqueue),
+      reportSimTelemetry(enqueue),
+    ]);
+  },
+
   /** Force-upload queued events (flushes touch strokes first). Call right before
    *  a risky backend call, e.g. just before your server's /score. */
   async flush(): Promise<void> {

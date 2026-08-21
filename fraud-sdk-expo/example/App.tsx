@@ -14,6 +14,7 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import Constants from 'expo-constants';
 import { FraudSdk, BusinessEvent, InterventionSheet, type LocalRisk } from '@veratools/fraud-sdk-expo';
+import * as Location from 'expo-location';
 
 // Dev : joindre la machine de dev depuis le simulateur/appareil via l'IP hôte de
 // Metro. Build déployé : EXPO_PUBLIC_COLLECTOR_URL (et éventuellement
@@ -143,10 +144,24 @@ export default function App() {
     }
   }
 
+  // La banque demande la permission — jamais le SDK (il se contente de lire
+  // l'état). Une fois accordée, on relance les collecteurs pour que la
+  // position rejoigne la session en cours plutôt que le prochain lancement.
+  async function askLocation(): Promise<void> {
+    try {
+      const cur = await Location.getForegroundPermissionsAsync();
+      if (!cur.granted && cur.canAskAgain) await Location.requestForegroundPermissionsAsync();
+      await FraudSdk.refreshEnvironment();
+    } catch {
+      /* démo : sans localisation, seuls les signaux géo sont absents */
+    }
+  }
+
   async function login() {
     setProgress('Préparation du profil…');
     setBusy(true);
     try {
+      await askLocation();
       // Await it: resolves once a token bound to this user exists, so the first
       // /v1/score after login sees the customer's profile (known device, history).
       await FraudSdk.session().setUser(await FraudSdk.hash(DEMO_REF));
