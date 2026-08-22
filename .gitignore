@@ -14,3 +14,7 @@ fraud-sdk-web/dist/
 # OS
 .DS_Store
 *.apk
+
+# Local secrets — never commit (fraud-ingest-server-go/.env holds DB creds)
+.env
+.env.local

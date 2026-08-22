@@ -42,6 +42,7 @@ import {
 import { reportIntegrity } from './collectors/integrity';
 import { reportLocation } from './collectors/location';
 import { reportSimTelemetry } from './collectors/simTelemetry';
+import { reportNetIntegrity } from './collectors/netIntegrity';
 import { BusinessEvent } from './events';
 import { _setReporter } from './ui/InterventionSheet';
 
@@ -283,6 +284,7 @@ export const FraudSdk = {
     void reportIntegrity(enqueue);
     void reportLocation(enqueue);
     void reportSimTelemetry(enqueue);
+    void reportNetIntegrity(enqueue);
 
     const remoteNative = watch.start();     // false => no native module
     const callNative = callWatch.start();   // false => no native module
@@ -385,6 +387,7 @@ export const FraudSdk = {
       reportIntegrity(enqueue),
       reportLocation(enqueue),
       reportSimTelemetry(enqueue),
+      reportNetIntegrity(enqueue),
     ]);
   },
 

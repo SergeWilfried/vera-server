@@ -320,6 +320,22 @@ type integrityPayload struct {
 	InstallerPackage *string `json:"installerPackage"`
 }
 
+// Transport integrity from the device (PASSIVE_NET_INTEGRITY): is the session
+// tunnelled, and is anything positioned to read it? Pointers throughout —
+// an SDK build without the collector, or a handset where the probe failed,
+// must not read as a clean transport.
+type netIntegrityPayload struct {
+	VPNActive       *bool  `json:"vpnActive"`
+	VPNBasis        string `json:"vpnBasis"`
+	ProxyConfigured *bool  `json:"proxyConfigured"`
+	ProxyBasis      string `json:"proxyBasis"`
+	// User-installed root CAs. -1 = trust store unreadable (not a zero).
+	UserCACount *int `json:"userCaCount"`
+	// System CAs, for sanity: a store reporting zero system CAs did not read
+	// successfully, whatever the user count says.
+	SystemCACount *int `json:"systemCaCount"`
+}
+
 // manualInstaller reports whether the installer package indicates a manual
 // APK install (sideload) rather than any app store. Store packages vary by
 // OEM, so only positive manual-install indicators are matched.
@@ -677,6 +693,52 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 				ev = "installer \"" + *integ.InstallerPackage + "\""
 			}
 			add("SIDELOADED_APP", "App installed outside an app store", 25, ev)
+		}
+		break
+	}
+
+	// --- transport integrity (VPN / proxy / MITM) -------------------------
+	// Deliberately low weights for the tunnel signals. A VPN is ordinary
+	// consumer behaviour — privacy apps, corporate profiles, ad blockers that
+	// run a local tunnel — and scoring it as fraud would penalise exactly the
+	// security-conscious customers. It earns its keep in combination: a tunnel
+	// on a fresh install during a live call is a different session from a
+	// tunnel alone, and the band arithmetic is what expresses that.
+	for _, e := range events {
+		if e.Type != "PASSIVE_NET_INTEGRITY" {
+			continue
+		}
+		net, ok := parsePayload[netIntegrityPayload](e.Payload)
+		if !ok {
+			break
+		}
+		if net.VPNActive != nil && *net.VPNActive {
+			ev := "tunnelled transport"
+			if net.VPNBasis != "" {
+				ev += " (" + net.VPNBasis + ")"
+			}
+			add("VPN_ACTIVE", "Traffic tunnelled through a VPN", 10, ev)
+		}
+		if net.ProxyConfigured != nil && *net.ProxyConfigured {
+			ev := "explicit proxy set for this network"
+			if net.ProxyBasis != "" {
+				ev += " (" + net.ProxyBasis + ")"
+			}
+			add("PROXY_CONFIGURED", "System HTTP proxy configured", 15, ev)
+		}
+		// A user-installed root CA is the interception-proxy tell (Burp,
+		// mitmproxy, Charles all need one). Read it as capability rather than
+		// proof: since Android 7 an app does not trust user CAs for its own
+		// traffic unless it opts in, so this says someone deliberately prepared
+		// the handset to read TLS. That is why it weighs like an integrity
+		// finding, and why it compounds with root — where a system CA or a
+		// pinning bypass is available anyway.
+		// Require a plausible store read: zero system CAs means the enumeration
+		// failed, and a user count from a failed read must not raise an alert.
+		caStoreRead := net.SystemCACount == nil || *net.SystemCACount > 0
+		if caStoreRead && net.UserCACount != nil && *net.UserCACount > 0 {
+			ev := fmt.Sprintf("%d user-installed root CA(s)", *net.UserCACount)
+			add("MITM_CA_INSTALLED", "Interception certificate present", 30, ev)
 		}
 		break
 	}

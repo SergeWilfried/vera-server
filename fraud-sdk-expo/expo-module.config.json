@@ -1,12 +1,18 @@
 {
-  "platforms": ["android", "apple"],
+  "platforms": [
+    "android",
+    "apple"
+  ],
   "android": {
     "modules": [
       "com.veratools.fraudsdk.VeraRemoteAccessModule",
-      "com.veratools.fraudsdk.VeraCallSignalsModule"
+      "com.veratools.fraudsdk.VeraCallSignalsModule",
+      "com.veratools.fraudsdk.VeraNetIntegrityModule"
     ]
   },
   "apple": {
-    "modules": ["VeraCallSignalsModule"]
+    "modules": [
+      "VeraCallSignalsModule"
+    ]
   }
 }

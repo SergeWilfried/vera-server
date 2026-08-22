@@ -788,6 +788,73 @@ const scenarios = {
     }
   },
 
+  /** Transport integrity: VPN / proxy / interception CA (Go server only).
+   *
+   *  The point of this scenario is as much what must NOT happen as what must.
+   *  A VPN is ordinary consumer behaviour, so variant 1 asserts that a tunnel
+   *  on a known device with a normal payment still passes — if a future weight
+   *  change makes privacy tooling enough to hold a payment, this fails. */
+  async netint() {
+    // -- variant 1: VPN alone on an established device must not condemn -----
+    const u = newUser();
+    await buildHistory(u, [30, 14, 2], [4000, 5000, 4500]);
+    const t0 = Date.now();
+    const s = crypto.randomUUID();
+    await sendBatch(u.install, [
+      { type: 'PASSIVE_NET_INTEGRITY', sessionId: s, installId: u.install, ts: t0,
+        payload: { vpnActive: true, vpnBasis: 'transport', proxyConfigured: false, userCaCount: 0 } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s, installId: u.install, userRef: u.ref,
+        ts: t0 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      { type: 'PASSIVE_TOUCH_STROKES', sessionId: s, installId: u.install, userRef: u.ref,
+        ts: t0 + 5000, payload: { strokes: strokes(6, 115, 340) } },
+      { type: 'BIZ_TXN_INITIATED', sessionId: s, installId: u.install, userRef: u.ref,
+        ts: t0 + 30000, callSignals: noCall,
+        payload: { amountBucket: 'NORMAL', currency: 'CZK', payeeIsNew: false, channel: 'BANK_TRANSFER' } },
+    ]);
+    const vpnOnly = await sendScore(mintToken(s, u.install, u.ref),
+      { txnRef: 'TXN-VPNONLY', amount: 4600, currency: 'CZK', payeeIsNew: false });
+    report('netint/vpn-only', { decision: 'ALLOW' }, vpnOnly);
+    const vpnCodes = (vpnOnly.signals || []).map((sg) => sg.code);
+    if (!vpnCodes.includes('VPN_ACTIVE')) {
+      console.log('  ✗ expected a VPN_ACTIVE signal'); process.exitCode = 1;
+    }
+    if (vpnOnly.decision === 'HOLD') {
+      console.log('  ✗ a VPN alone must not hold a routine payment'); process.exitCode = 1;
+    } else {
+      console.log('  ✓ VPN observed but not punished on its own');
+    }
+
+    // -- variant 2: interception CA on a rooted, unknown install -----------
+    const u2 = newUser();
+    await buildHistory(u2, [30, 14, 2], [4000, 5000, 4500]);
+    const t1 = Date.now();
+    const s2 = crypto.randomUUID();
+    const attacker = crypto.randomUUID();               // new install
+    await sendBatch(attacker, [
+      { type: 'PASSIVE_NET_INTEGRITY', sessionId: s2, installId: attacker, ts: t1,
+        payload: { vpnActive: true, vpnBasis: 'interface', proxyConfigured: true, userCaCount: 2 } },
+      { type: 'PASSIVE_APP_INTEGRITY', sessionId: s2, installId: attacker, ts: t1 + 500,
+        payload: { rootLikely: true, emulatorLikely: false, debuggable: false } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s2, installId: attacker, userRef: u2.ref,
+        ts: t1 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      { type: 'BIZ_TXN_INITIATED', sessionId: s2, installId: attacker, userRef: u2.ref,
+        ts: t1 + 30000, callSignals: noCall,
+        payload: { amountBucket: 'HIGH', currency: 'CZK', payeeIsNew: true, channel: 'BANK_TRANSFER' } },
+    ]);
+    const got = await sendScore(mintToken(s2, attacker, u2.ref),
+      { txnRef: 'TXN-MITM', amount: 92000, currency: 'CZK', payeeIsNew: true });
+    report('netint/mitm', { decision: 'HOLD', threatType: 'Account Takeover' }, got);
+    const codes = (got.signals || []).map((sg) => sg.code);
+    for (const want of ['MITM_CA_INSTALLED', 'PROXY_CONFIGURED', 'VPN_ACTIVE']) {
+      if (!codes.includes(want)) {
+        console.log(`  ✗ expected a ${want} signal`); process.exitCode = 1;
+      }
+    }
+    if (codes.includes('MITM_CA_INSTALLED') && codes.includes('DEVICE_INTEGRITY')) {
+      console.log('  ✓ interception CA + root scored together');
+    }
+  },
+
   /** Follow-the-money graph (Go server only). Seeds a subject with a
    *  recurring utility payment (safe), a large transfer to a mule-patterned
    *  in-book account with fan-in from two other customers (mule + hop-2

@@ -2,4 +2,7 @@
   <!-- Android 15+ screen-recording detection (WindowManager.addScreenRecordingCallback).
        Install-time normal permission — no runtime prompt. Merged into the app. -->
   <uses-permission android:name="android.permission.DETECT_SCREEN_RECORDING" />
+  <!-- VPN / proxy detection (ConnectivityManager). Install-time normal
+       permission — no runtime prompt. -->
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 </manifest>
