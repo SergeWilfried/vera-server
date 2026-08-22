@@ -788,6 +788,91 @@ const scenarios = {
     }
   },
 
+  /** Cloned app container (Go server only).
+   *
+   *  Guards both directions. A clone must be flagged — it is how one handset
+   *  presents as two devices and slips the install_id link. A corporate work
+   *  profile is ALSO a secondary user, and must not be: if the device-admin
+   *  exemption ever regresses, every MDM-managed customer starts scoring as an
+   *  evasion, so variant 3 fails loudly. */
+  async clone() {
+    // -- variant 1: userspace sandbox (Parallel Space and friends) ---------
+    const u = newUser();
+    await buildHistory(u, [30, 14, 2], [4000, 5000, 4500]);
+    const t0 = Date.now();
+    const s = crypto.randomUUID();
+    const clone = crypto.randomUUID();                 // clone mints its own install
+    await sendBatch(clone, [
+      { type: 'PASSIVE_APP_CONTAINER', sessionId: s, installId: clone, ts: t0,
+        payload: { androidUserId: 0, secondaryUser: false, virtualized: true,
+                   dataDirBasis: 'nested', adminPresent: false } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s, installId: clone, userRef: u.ref,
+        ts: t0 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      { type: 'BIZ_TXN_INITIATED', sessionId: s, installId: clone, userRef: u.ref,
+        ts: t0 + 30000, callSignals: noCall,
+        payload: { amountBucket: 'HIGH', currency: 'CZK', payeeIsNew: true, channel: 'BANK_TRANSFER' } },
+    ]);
+    const virt = await sendScore(mintToken(s, clone, u.ref),
+      { txnRef: 'TXN-CLONEVIRT', amount: 74000, currency: 'CZK', payeeIsNew: true });
+    report('clone/virtualized', { decision: 'HOLD' }, virt);
+    if (!(virt.signals || []).some((sg) => sg.code === 'CLONE_CONTAINER')) {
+      console.log('  ✗ expected a CLONE_CONTAINER signal'); process.exitCode = 1;
+    } else {
+      console.log('  ✓ userspace sandbox flagged');
+    }
+
+    // -- variant 2: dual-app clone as a secondary Android user -------------
+    const u2 = newUser();
+    await buildHistory(u2, [30, 14, 2], [4000, 5000, 4500]);
+    const t1 = Date.now();
+    const s2 = crypto.randomUUID();
+    const dual = crypto.randomUUID();
+    await sendBatch(dual, [
+      { type: 'PASSIVE_APP_CONTAINER', sessionId: s2, installId: dual, ts: t1,
+        payload: { androidUserId: 999, secondaryUser: true, virtualized: false,
+                   dataDirBasis: 'standard', adminPresent: false } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s2, installId: dual, userRef: u2.ref,
+        ts: t1 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      { type: 'BIZ_TXN_INITIATED', sessionId: s2, installId: dual, userRef: u2.ref,
+        ts: t1 + 30000, callSignals: noCall,
+        payload: { amountBucket: 'HIGH', currency: 'CZK', payeeIsNew: true, channel: 'BANK_TRANSFER' } },
+    ]);
+    const dualGot = await sendScore(mintToken(s2, dual, u2.ref),
+      { txnRef: 'TXN-CLONEDUAL', amount: 74000, currency: 'CZK', payeeIsNew: true });
+    report('clone/dual-app', { decision: 'HOLD' }, dualGot);
+    if (!(dualGot.signals || []).some((sg) => sg.code === 'CLONE_CONTAINER')) {
+      console.log('  ✗ expected a CLONE_CONTAINER signal'); process.exitCode = 1;
+    } else {
+      console.log('  ✓ secondary user without a device admin flagged');
+    }
+
+    // -- variant 3: corporate work profile must stay silent ----------------
+    const u3 = newUser();
+    await buildHistory(u3, [30, 14, 2], [4000, 5000, 4500]);
+    const t2 = Date.now();
+    const s3 = crypto.randomUUID();
+    await sendBatch(u3.install, [
+      { type: 'PASSIVE_APP_CONTAINER', sessionId: s3, installId: u3.install, ts: t2,
+        payload: { androidUserId: 10, secondaryUser: true, virtualized: false,
+                   dataDirBasis: 'standard', adminPresent: true } },
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s3, installId: u3.install, userRef: u3.ref,
+        ts: t2 + 2000, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      { type: 'PASSIVE_TOUCH_STROKES', sessionId: s3, installId: u3.install, userRef: u3.ref,
+        ts: t2 + 5000, payload: { strokes: strokes(6, 115, 340) } },
+      { type: 'BIZ_TXN_INITIATED', sessionId: s3, installId: u3.install, userRef: u3.ref,
+        ts: t2 + 30000, callSignals: noCall,
+        payload: { amountBucket: 'NORMAL', currency: 'CZK', payeeIsNew: false, channel: 'BANK_TRANSFER' } },
+    ]);
+    const work = await sendScore(mintToken(s3, u3.install, u3.ref),
+      { txnRef: 'TXN-WORKPROFILE', amount: 4600, currency: 'CZK', payeeIsNew: false });
+    report('clone/work-profile', { decision: 'ALLOW' }, work);
+    if ((work.signals || []).some((sg) => sg.code === 'CLONE_CONTAINER')) {
+      console.log('  ✗ a managed work profile must not score as a clone'); process.exitCode = 1;
+    } else {
+      console.log('  ✓ MDM-managed work profile exempted');
+    }
+  },
+
   /** Transport integrity: VPN / proxy / interception CA (Go server only).
    *
    *  The point of this scenario is as much what must NOT happen as what must.

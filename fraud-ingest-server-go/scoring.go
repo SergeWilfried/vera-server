@@ -336,6 +336,17 @@ type netIntegrityPayload struct {
 	SystemCACount *int `json:"systemCaCount"`
 }
 
+// App-container state (PASSIVE_APP_CONTAINER): is this instance a clone?
+// Pointers so an SDK build without the collector does not read as a clean
+// primary-user instance.
+type containerPayload struct {
+	AndroidUserID *int   `json:"androidUserId"`
+	SecondaryUser *bool  `json:"secondaryUser"`
+	Virtualized   *bool  `json:"virtualized"`
+	DataDirBasis  string `json:"dataDirBasis"`
+	AdminPresent  *bool  `json:"adminPresent"`
+}
+
 // manualInstaller reports whether the installer package indicates a manual
 // APK install (sideload) rather than any app store. Store packages vary by
 // OEM, so only positive manual-install indicators are matched.
@@ -739,6 +750,39 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 		if caStoreRead && net.UserCACount != nil && *net.UserCACount > 0 {
 			ev := fmt.Sprintf("%d user-installed root CA(s)", *net.UserCACount)
 			add("MITM_CA_INSTALLED", "Interception certificate present", 30, ev)
+		}
+		break
+	}
+
+	// --- cloned app container --------------------------------------------
+	// Multi-accounting is linked on install_id, and a clone mints its own —
+	// so one handset presents as two unrelated devices and the device link
+	// quietly fails. Flagging the clone is what keeps that link honest.
+	for _, e := range events {
+		if e.Type != "PASSIVE_APP_CONTAINER" {
+			continue
+		}
+		c, ok := parsePayload[containerPayload](e.Payload)
+		if !ok {
+			break
+		}
+		// A userspace sandbox is unambiguous: nothing legitimate runs a banking
+		// app inside another app's data directory.
+		if c.Virtualized != nil && *c.Virtualized {
+			add("CLONE_CONTAINER", "App running inside a cloned container", 20,
+				"data dir nested in another app's sandbox")
+			break
+		}
+		// A secondary Android user is a clone OR a corporate work profile, and
+		// an MDM-managed handset is legitimate — so an active device admin
+		// exempts it rather than scoring every enterprise device as evasion.
+		if c.SecondaryUser != nil && *c.SecondaryUser &&
+			(c.AdminPresent == nil || !*c.AdminPresent) {
+			ev := "secondary Android user, no device admin"
+			if c.AndroidUserID != nil {
+				ev = fmt.Sprintf("Android user %d, no device admin", *c.AndroidUserID)
+			}
+			add("CLONE_CONTAINER", "App running as a cloned secondary user", 20, ev)
 		}
 		break
 	}
