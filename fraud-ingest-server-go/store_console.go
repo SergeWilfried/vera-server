@@ -952,6 +952,9 @@ func defaultHighAmountAny() map[string]any {
 type riskSettings struct {
 	highAmount                                    float64
 	velWindowMin, velThreshold, velBase, velSlope int
+	// Policy band cutoffs: score >= holdAt holds, >= stepUpAt steps up.
+	// Per-tenant so "risk appetite" is a real dial, not console decoration.
+	stepUpAt, holdAt int
 }
 
 // resolveRisk reads tenant_settings.risk once and resolves both the currency
@@ -961,6 +964,7 @@ func (s *Server) resolveRisk(ctx context.Context, tenantID, currency string) ris
 		highAmount:   defaultHighAmountCutoff,
 		velWindowMin: defaultVelWindowMin, velThreshold: defaultVelThreshold,
 		velBase: defaultVelBase, velSlope: defaultVelSlope,
+		stepUpAt: defaultStepUpAt, holdAt: defaultHoldAt,
 	}
 	table := defaultHighAmount()
 	var raw []byte
@@ -974,6 +978,20 @@ func (s *Server) resolveRisk(ctx context.Context, tenantID, currency string) ris
 						if f, ok := toFloat(v); ok {
 							table[strings.ToUpper(k)] = f
 						}
+					}
+				}
+				if bands, ok := risk["bands"].(map[string]any); ok {
+					stepUp, hold := rs.stepUpAt, rs.holdAt
+					if f, ok := toFloat(bands["stepUp"]); ok {
+						stepUp = int(f)
+					}
+					if f, ok := toFloat(bands["hold"]); ok {
+						hold = int(f)
+					}
+					// Only a sane ordering is accepted — a typo must degrade to
+					// the defaults, never to a tenant that can't hold anything.
+					if stepUp > 0 && hold > stepUp && hold <= 100 {
+						rs.stepUpAt, rs.holdAt = stepUp, hold
 					}
 				}
 				if vel, ok := risk["velocity"].(map[string]any); ok {

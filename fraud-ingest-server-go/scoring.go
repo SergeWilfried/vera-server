@@ -88,7 +88,7 @@ type ScoringCtx struct {
 	// txn.Currency by the handler. <=0 means unset -> fall back to the global
 	// default (see highAmountCutoff). The history-based AMOUNT_ABOVE_PROFILE
 	// branch is already currency-safe (relative to the user's own median).
-	HighAmountThreshold  float64
+	HighAmountThreshold float64
 	// Per-tenant TXN_VELOCITY tuning, resolved by the handler. Each <=0 means
 	// unset -> fall back to the default (see velocityConfig). window in minutes.
 	VelocityWindowMin int
@@ -113,6 +113,13 @@ func highAmountCutoff(t float64) float64 {
 	}
 	return defaultHighAmountCutoff
 }
+
+// Policy band defaults: 0–54 ALLOW, 55–84 STEP_UP, 85–100 HOLD. Per-tenant
+// overrides ride tenant_settings.risk.bands (see resolveRisk).
+const (
+	defaultStepUpAt = 55
+	defaultHoldAt   = 85
+)
 
 // velocity defaults: 4+ transfers in a rolling 10-min window fires, weight
 // escalates 20 + 15 per extra transfer.

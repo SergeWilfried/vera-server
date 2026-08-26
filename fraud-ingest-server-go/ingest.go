@@ -255,7 +255,7 @@ func (s *Server) handleTransactions(w http.ResponseWriter, r *http.Request) {
 				log.Printf("detector %s: %v", d.label, err)
 				continue
 			}
-			if result.Score < 85 {
+			if result.Score < s.resolveRisk(ctx, tenantID, "").holdAt {
 				continue
 			}
 			id, err := s.raiseAlert(ctx, tenantID, AlertDraft{
@@ -354,11 +354,12 @@ func (s *Server) handleScore(w http.ResponseWriter, r *http.Request) {
 	}
 	result := scoreSession(sc, txn)
 
-	// Policy bands: 0–54 approve · 55–84 step-up · 85–100 hold for analyst
+	// Policy bands (defaults 0–54 approve · 55–84 step-up · 85–100 hold),
+	// per-tenant via risk.bands — the appetite dial the console configures.
 	decision := "ALLOW"
-	if result.Score >= 85 {
+	if result.Score >= rr.holdAt {
 		decision = "HOLD"
-	} else if result.Score >= 55 {
+	} else if result.Score >= rr.stepUpAt {
 		decision = "STEP_UP"
 	}
 	intervention := interventionFor(decision, result.ThreatType)

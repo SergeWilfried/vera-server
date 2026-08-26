@@ -526,6 +526,72 @@ const scenarios = {
   /** Analyst auth + RBAC: bootstrap admin logs in, builds the team, and
    *  every role is probed against the endpoints it must and must not
    *  reach. Also checks logout revocation and legacy service-key limits. */
+  /** Per-tenant policy bands (Go server only) — the risk-appetite dial.
+   *
+   *  One session shape (new install + new payee, deterministic score 55)
+   *  scored under three configurations must produce three different
+   *  decisions. Sessions are distinct because /v1/score is idempotent per
+   *  (tenant, session, txnRef); the shape is identical. Defaults are
+   *  restored afterwards so the scenario is rerunnable and does not poison
+   *  the rest of the suite. */
+  async bands() {
+    const api = (path, { method = 'GET', token, body } = {}) =>
+      fetch(BASE + path, {
+        method,
+        headers: { 'Content-Type': 'application/json',
+                   ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      }).then(async r => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+    const adm = await api('/v1/console/login', { method: 'POST',
+      body: { email: 'admin@demobank.cz',
+              password: process.env.CONSOLE_ADMIN_PASSWORD || 'admin-dev-password' } });
+    const admin = adm.body.token;
+    const setBands = (stepUp, hold) => api('/v1/console/settings', {
+      method: 'PATCH', token: admin, body: { risk: { bands: { stepUp, hold } } } });
+
+    const scoreOnce = async (ref) => {
+      const u = newUser();
+      const s = crypto.randomUUID();
+      const t0 = Date.now();
+      await sendBatch(u.install, [
+        { type: 'PASSIVE_DEVICE_FINGERPRINT', sessionId: s, installId: u.install, ts: t0,
+          payload: { model: 'Pixel', platform: 'android', firstSeen: t0 - 120000, installAgeMs: 120000 } },
+        { type: 'BIZ_LOGIN_RESULT', sessionId: s, installId: u.install, userRef: u.ref,
+          ts: t0 + 500, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      ]);
+      return sendScore(mintToken(s, u.install, u.ref),
+        { txnRef: ref, amount: 30000, currency: 'XOF', payeeIsNew: true });
+    };
+
+    try {
+      const base = await scoreOnce('TXN-BANDS-DEFAULT');
+      const okBase = base.decision === 'STEP_UP';
+      if (!okBase) { console.log(`  ✗ default bands: expected STEP_UP, got ${base.decision} (${base.riskScore})`); process.exitCode = 1; }
+
+      await setBands(40, 50);              // conservative: hold sooner
+      const cons = await scoreOnce('TXN-BANDS-CONSERVATIVE');
+      const okCons = cons.decision === 'HOLD';
+      if (!okCons) { console.log(`  ✗ conservative bands: expected HOLD, got ${cons.decision} (${cons.riskScore})`); process.exitCode = 1; }
+
+      await setBands(60, 90);              // aggressive: tolerate more
+      const aggr = await scoreOnce('TXN-BANDS-AGGRESSIVE');
+      const okAggr = aggr.decision === 'ALLOW';
+      if (!okAggr) { console.log(`  ✗ aggressive bands: expected ALLOW, got ${aggr.decision} (${aggr.riskScore})`); process.exitCode = 1; }
+
+      // Malformed ordering must degrade to defaults, not to "never hold".
+      await setBands(90, 40);
+      const bad = await scoreOnce('TXN-BANDS-MALFORMED');
+      const okBad = bad.decision === 'STEP_UP';
+      if (!okBad) { console.log(`  ✗ malformed bands: expected default STEP_UP, got ${bad.decision}`); process.exitCode = 1; }
+
+      console.log(`${okBase && okCons && okAggr && okBad ? '✓' : '✗'} bands: same session ` +
+        `(score ${base.riskScore}) -> default=${base.decision} conservative=${cons.decision} ` +
+        `aggressive=${aggr.decision} malformed=${bad.decision}`);
+    } finally {
+      await setBands(55, 85);              // restore defaults whatever happened
+    }
+  },
+
   /** Audit trail (Go server only). Every mutating console request must land
    *  in the log with actor identity; failed logins must be attributed; and
    *  the trail itself is supervisory — analyst rank must NOT read it. */
