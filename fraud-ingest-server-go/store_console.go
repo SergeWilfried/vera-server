@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -118,7 +120,7 @@ func (s *Server) detectionAnalytics(ctx context.Context, tenantID string, days i
 // subjects/accounts by ref prefix. Cheap prefix/contains lookups only —
 // enough to jump straight to an alert or a subject profile.
 func (s *Server) search(ctx context.Context, tenantID, q string) (map[string]any, error) {
-	like := q + "%"      // ref prefix
+	like := q + "%"           // ref prefix
 	contains := "%" + q + "%" // alert-id substring, so "2273" finds ALT-2273
 	alerts, err := queryMaps(ctx, s.pool,
 		`SELECT id, score, threat_type, state, user_ref, account_ref
@@ -1306,4 +1308,75 @@ func (s *Server) updateAnalyst(ctx context.Context, tenantID string, id int, rol
 		s.pool.Exec(ctx, `DELETE FROM analyst_sessions WHERE analyst_id=$1`, id)
 	}
 	return row, "", nil
+}
+
+// ---------- audit trail ----------
+
+// auditWrite appends one audit row. Fire-and-forget: the audit trail must
+// never fail the request it describes, so errors are logged and swallowed.
+func (s *Server) auditWrite(ctx context.Context, tenantID string, actor Actor,
+	action, target string, status int, detail map[string]any) {
+	role := actor.Role
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	// Credentials never reach the log, whatever the endpoint.
+	redacted := map[string]any{}
+	for k, v := range detail {
+		switch strings.ToLower(k) {
+		case "password", "code", "token", "secret", "totp":
+			redacted[k] = "[redacted]"
+		default:
+			redacted[k] = v
+		}
+	}
+	raw, err := json.Marshal(redacted)
+	if err != nil || len(raw) > 4096 {
+		raw = []byte(`{"note":"detail omitted"}`)
+	}
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO audit_log (tenant_id, actor, actor_role, action, target, status, detail)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		tenantID, actor.Email, role, action, target, status, raw); err != nil {
+		log.Printf("audit write failed (action=%s): %v", action, err)
+	}
+}
+
+// listAudit returns audit rows newest-first, keyset-paginated on id.
+func (s *Server) listAudit(ctx context.Context, tenantID string, limit int,
+	beforeID int64, actorFilter string) (map[string]any, error) {
+	where := "tenant_id=$1"
+	args := []any{tenantID}
+	if beforeID > 0 {
+		args = append(args, beforeID)
+		where += fmt.Sprintf(" AND id < $%d", len(args))
+	}
+	if actorFilter != "" {
+		args = append(args, "%"+actorFilter+"%")
+		where += fmt.Sprintf(" AND actor ILIKE $%d", len(args))
+	}
+	args = append(args, limit)
+	rows, err := queryMaps(ctx, s.pool,
+		`SELECT id, at, actor, actor_role, action, target, status, detail
+		 FROM audit_log WHERE `+where+`
+		 ORDER BY id DESC LIMIT $`+strconv.Itoa(len(args)), args...)
+	if err != nil {
+		return nil, err
+	}
+	var next int64
+	if len(rows) == limit {
+		if id, ok := rows[len(rows)-1]["id"].(int64); ok {
+			next = id
+		}
+	}
+	return map[string]any{"entries": rows, "nextBefore": next}, nil
+}
+
+// tenantOfAnalystEmail resolves which tenant an email belongs to, for
+// attributing failed logins. "" when the email is unknown.
+func (s *Server) tenantOfAnalystEmail(ctx context.Context, email string) string {
+	var t string
+	_ = s.pool.QueryRow(ctx,
+		`SELECT tenant_id FROM analysts WHERE lower(email)=lower($1) LIMIT 1`, email).Scan(&t)
+	return t
 }

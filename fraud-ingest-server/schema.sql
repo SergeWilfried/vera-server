@@ -130,6 +130,9 @@ DELETE FROM decisions d USING decisions k
 CREATE UNIQUE INDEX IF NOT EXISTS decisions_idem_idx
   ON decisions (tenant_id, session_id, txn_ref) WHERE txn_ref IS NOT NULL;
 CREATE INDEX IF NOT EXISTS decisions_tenant_idx ON decisions (tenant_id, created_at);
+-- Per-payee amount history for ESCALATING_PAYEE (expression index on the txn JSON)
+CREATE INDEX IF NOT EXISTS decisions_payee_idx
+  ON decisions (tenant_id, user_ref, (txn->>'payeeRef'), created_at DESC);
 
 -- Bank-side transaction feed: the tenant's core banking pushes settled
 -- ledger movements (both directions), account/counterparty refs hashed.
@@ -320,3 +323,20 @@ ALTER TABLE alerts    ADD COLUMN IF NOT EXISTS signals jsonb NOT NULL DEFAULT '[
 ALTER TABLE alerts    ADD COLUMN IF NOT EXISTS account_ref text;
 ALTER TABLE alerts    ALTER COLUMN session_id DROP NOT NULL;
 ALTER TABLE analysts  ADD COLUMN IF NOT EXISTS totp_secret text;  -- NULL = no MFA (bootstrap admin)
+
+-- Console audit trail: who did what, when — every mutating console request
+-- (dispatcher-level, so new endpoints are covered automatically) plus login,
+-- logout and invitation acceptance. Append-only; nothing updates or deletes
+-- rows. detail is the request body with credential fields redacted.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id         bigserial PRIMARY KEY,
+  tenant_id  text NOT NULL,
+  at         timestamptz NOT NULL DEFAULT now(),
+  actor      text NOT NULL,                 -- analyst email, or the attempted email on failed logins
+  actor_role text NOT NULL DEFAULT '',
+  action     text NOT NULL,                 -- e.g. PATCH /v1/console/alerts/{id}, login.failed
+  target     text NOT NULL DEFAULT '',      -- first path parameter (ALT-…, CASE-…, key id…)
+  status     integer NOT NULL,              -- HTTP status the request returned
+  detail     jsonb NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS audit_log_tenant_idx ON audit_log (tenant_id, id DESC);

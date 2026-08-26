@@ -526,6 +526,63 @@ const scenarios = {
   /** Analyst auth + RBAC: bootstrap admin logs in, builds the team, and
    *  every role is probed against the endpoints it must and must not
    *  reach. Also checks logout revocation and legacy service-key limits. */
+  /** Audit trail (Go server only). Every mutating console request must land
+   *  in the log with actor identity; failed logins must be attributed; and
+   *  the trail itself is supervisory — analyst rank must NOT read it. */
+  async audit() {
+    const api = (path, { method = 'GET', token, body } = {}) =>
+      fetch(BASE + path, {
+        method,
+        headers: { 'Content-Type': 'application/json',
+                   ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      }).then(async r => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+    const login = (email, password) =>
+      api('/v1/console/login', { method: 'POST', body: { email, password } });
+
+    // Traceable actions: a failed login, a disposition, an analyst account.
+    await login('admin@demobank.cz', 'wrong-password-for-audit');
+    const adm = await login('admin@demobank.cz',
+      process.env.CONSOLE_ADMIN_PASSWORD || 'admin-dev-password');
+    const admin = adm.body.token;
+    const sfx = crypto.randomUUID().slice(0, 8);
+    await api('/v1/console/team', { method: 'POST', token: admin,
+      body: { email: `auditcase-${sfx}@demobank.cz`, name: 'auditcase',
+              role: 'analyst', password: 'analyst-pass-1' } });
+    const an = (await login(`auditcase-${sfx}@demobank.cz`, 'analyst-pass-1')).body.token;
+    const { alertId } = await scenarios.coached();
+    await api(`/v1/console/alerts/${alertId}`, { method: 'PATCH', token: an,
+      body: { state: 'Resolved', disposition: 'Confirmed fraud (audit scenario).' } });
+
+    // The trail, read as admin.
+    const trail = await api('/v1/console/audit?limit=50', { token: admin });
+    const entries = trail.body.entries || [];
+    const has = (pred, label) => {
+      const hit = entries.some(pred);
+      if (!hit) { console.log(`  ✗ audit trail missing: ${label}`); process.exitCode = 1; }
+      return hit;
+    };
+    const okAll =
+      has(e => e.action === 'login.failed' && e.actor === 'admin@demobank.cz', 'failed login') &
+      has(e => e.action === 'login' && e.actor === 'admin@demobank.cz', 'admin login') &
+      has(e => /POST.*team/.test(e.action) && e.actor_role === 'admin', 'team creation by admin') &
+      has(e => /PATCH.*alerts/.test(e.action) && e.target === alertId
+            && e.actor === `auditcase-${sfx}@demobank.cz`, 'disposition with actor + target');
+    // Credential redaction: the team-creation body carried a password.
+    const teamRow = entries.find(e => /POST.*team/.test(e.action));
+    if (teamRow && JSON.stringify(teamRow.detail).includes('analyst-pass-1')) {
+      console.log('  ✗ password leaked into audit detail'); process.exitCode = 1;
+    }
+    // Supervisory only: analyst rank must not read the trail.
+    const denied = await api('/v1/console/audit', { token: an });
+    if (denied.status !== 403) {
+      console.log(`  ✗ analyst rank read the audit trail (${denied.status})`); process.exitCode = 1;
+    }
+    console.log(`${okAll && denied.status === 403 ? '✓' : '✗'} audit: ` +
+      `${entries.length} entries, failed-login attributed, actors+targets recorded, ` +
+      `password redacted, analyst read=${denied.status}`);
+  },
+
   async auth() {
     const api = (path, { method = 'GET', token, body } = {}) =>
       fetch(BASE + path, {

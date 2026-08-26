@@ -296,6 +296,14 @@ func (s *Server) consoleRoutes() []consoleRoute {
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				return ok(s.getSettings(ctx, t))
 			}),
+		R("GET", `^/v1/console/audit$`, rankSenior,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				var before int64
+				if v, err := strconv.ParseInt(q.Get("before"), 10, 64); err == nil && v > 0 {
+					before = v
+				}
+				return ok(s.listAudit(ctx, t, limitOf(q, 50, 200), before, strings.TrimSpace(q.Get("actor"))))
+			}),
 		R("PATCH", `^/v1/console/settings$`, rankAdmin,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				return ok(s.patchSettings(ctx, t, b))
@@ -448,6 +456,7 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 		if auth.actor.Role != "service" {
 			s.deleteAnalystSession(ctx, auth.token)
 		}
+		s.auditWrite(ctx, auth.tenantID, auth.actor, "logout", "", 200, nil)
 		writeJSON(w, 200, map[string]any{"ok": true})
 		return
 	}
@@ -477,6 +486,16 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 		if out == nil && status == 404 {
 			writeJSON(w, 404, map[string]any{"error": "not found"})
 			return
+		}
+		// Audit every successful mutation at the one choke point all routed
+		// endpoints share — new endpoints are covered without remembering to.
+		if r.Method != "GET" && status >= 200 && status < 300 {
+			target := ""
+			if len(m) > 1 {
+				target = m[1]
+			}
+			s.auditWrite(ctx, auth.tenantID, auth.actor,
+				r.Method+" "+route.re.String(), target, status, body)
 		}
 		writeJSON(w, status, out)
 		return
@@ -510,6 +529,10 @@ func (s *Server) handleLogin(ctx context.Context, w http.ResponseWriter, r *http
 		return
 	}
 	if analyst == nil {
+		if t := s.tenantOfAnalystEmail(ctx, body.Email); t != "" {
+			s.auditWrite(ctx, t, Actor{Email: body.Email}, "login.failed", "", 401,
+				map[string]any{"reason": "invalid credentials"})
+		}
 		writeJSON(w, 401, map[string]any{"error": "invalid credentials"})
 		return
 	}
@@ -520,6 +543,10 @@ func (s *Server) handleLogin(ctx context.Context, w http.ResponseWriter, r *http
 			return
 		}
 		if !verifyTotp(secret, body.Code) {
+			if t, _ := analyst["tenant_id"].(string); t != "" {
+				s.auditWrite(ctx, t, Actor{Email: body.Email}, "login.failed", "", 401,
+					map[string]any{"reason": "invalid two-factor code"})
+			}
 			writeJSON(w, 401, map[string]any{"error": "invalid two-factor code", "mfaRequired": true})
 			return
 		}
@@ -531,6 +558,11 @@ func (s *Server) handleLogin(ctx context.Context, w http.ResponseWriter, r *http
 		return
 	}
 	log.Printf("⚿ login %v (%v)", analyst["email"], analyst["role"])
+	if t, _ := analyst["tenant_id"].(string); t != "" {
+		email, _ := analyst["email"].(string)
+		role, _ := analyst["role"].(string)
+		s.auditWrite(ctx, t, Actor{Email: email, Role: role}, "login", "", 200, nil)
+	}
 	writeJSON(w, 200, map[string]any{
 		"token": token, "expiresAt": expires, "analyst": analystPublic(analyst),
 	})

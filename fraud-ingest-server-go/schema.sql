@@ -323,3 +323,20 @@ ALTER TABLE alerts    ADD COLUMN IF NOT EXISTS signals jsonb NOT NULL DEFAULT '[
 ALTER TABLE alerts    ADD COLUMN IF NOT EXISTS account_ref text;
 ALTER TABLE alerts    ALTER COLUMN session_id DROP NOT NULL;
 ALTER TABLE analysts  ADD COLUMN IF NOT EXISTS totp_secret text;  -- NULL = no MFA (bootstrap admin)
+
+-- Console audit trail: who did what, when — every mutating console request
+-- (dispatcher-level, so new endpoints are covered automatically) plus login,
+-- logout and invitation acceptance. Append-only; nothing updates or deletes
+-- rows. detail is the request body with credential fields redacted.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id         bigserial PRIMARY KEY,
+  tenant_id  text NOT NULL,
+  at         timestamptz NOT NULL DEFAULT now(),
+  actor      text NOT NULL,                 -- analyst email, or the attempted email on failed logins
+  actor_role text NOT NULL DEFAULT '',
+  action     text NOT NULL,                 -- e.g. PATCH /v1/console/alerts/{id}, login.failed
+  target     text NOT NULL DEFAULT '',      -- first path parameter (ALT-…, CASE-…, key id…)
+  status     integer NOT NULL,              -- HTTP status the request returned
+  detail     jsonb NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS audit_log_tenant_idx ON audit_log (tenant_id, id DESC);
