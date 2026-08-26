@@ -26,6 +26,10 @@ public final class TokenClient {
     /** Mints a token for (sessionId, userRef); returns null on any failure. */
     public static String mint(SdkConfig config, String sessionId,
                               String installId, String userRef) {
+        // disconnect() lives in finally: if the write or read throws mid-flight
+        // (exactly what flaky field networks produce), an early return path
+        // would otherwise leak the connection.
+        HttpURLConnection c = null;
         try {
             JSONObject body = new JSONObject();
             body.put("sessionId", sessionId);
@@ -33,7 +37,7 @@ public final class TokenClient {
             if (userRef != null) body.put("userRef", userRef);
             byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
 
-            HttpURLConnection c = (HttpURLConnection)
+            c = (HttpURLConnection)
                     new URL(config.collectorBaseUrl + "/v1/collect/token").openConnection();
             c.setConnectTimeout(10_000);
             c.setReadTimeout(10_000);
@@ -44,18 +48,19 @@ public final class TokenClient {
             c.setRequestProperty("X-App-Key", config.appKey);
             try (OutputStream os = c.getOutputStream()) { os.write(payload); }
 
-            if (c.getResponseCode() != 200) { c.disconnect(); return null; }
+            if (c.getResponseCode() != 200) return null;
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
             try (InputStream is = c.getInputStream()) {
                 byte[] buf = new byte[4096];
                 int n;
                 while ((n = is.read(buf)) > 0 && bos.size() < 64_000) bos.write(buf, 0, n);
             }
-            c.disconnect();
             String token = new JSONObject(bos.toString("UTF-8")).optString("token", "");
             return token.isEmpty() ? null : token;
         } catch (Exception e) {
             return null;
+        } finally {
+            if (c != null) c.disconnect();
         }
     }
 }

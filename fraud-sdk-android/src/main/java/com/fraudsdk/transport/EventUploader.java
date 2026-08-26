@@ -60,6 +60,9 @@ public final class EventUploader {
     }
 
     private void uploadOnce() {
+        // disconnect() lives in finally — a request that throws mid-flight
+        // must not leak its connection (see TokenClient for the same rule).
+        HttpURLConnection c = null;
         try {
             if (backoffMs > 0) { Thread.sleep(Math.min(backoffMs, 60_000)); }
             if (!isConnected()) return;
@@ -74,7 +77,7 @@ public final class EventUploader {
 
             byte[] body = gzip(String.join("\n", batch).getBytes(StandardCharsets.UTF_8));
 
-            HttpURLConnection c = (HttpURLConnection)
+            c = (HttpURLConnection)
                     new URL(config.collectorBaseUrl + "/v1/collect").openConnection();
             c.setConnectTimeout(10_000);
             c.setReadTimeout(10_000);
@@ -102,9 +105,10 @@ public final class EventUploader {
             } else {
                 backoffMs = backoffMs == 0 ? 5_000 : backoffMs * 2;   // 5xx / 429
             }
-            c.disconnect();
         } catch (Exception e) {
             backoffMs = backoffMs == 0 ? 5_000 : Math.min(backoffMs * 2, 60_000);
+        } finally {
+            if (c != null) c.disconnect();
         }
     }
 
@@ -117,8 +121,9 @@ public final class EventUploader {
         long every = config.heartbeatMs;
         if (every <= 0 || System.currentTimeMillis() - lastPostMs < every) return;
         lastPostMs = System.currentTimeMillis();
+        HttpURLConnection c = null;
         try {
-            HttpURLConnection c = (HttpURLConnection)
+            c = (HttpURLConnection)
                     new URL(config.collectorBaseUrl + "/v1/collect").openConnection();
             c.setConnectTimeout(10_000);
             c.setReadTimeout(10_000);
@@ -132,9 +137,10 @@ public final class EventUploader {
             c.setRequestProperty("X-Sdk", "android/0.3.0");
             try (OutputStream os = c.getOutputStream()) { os.write(new byte[0]); }
             if (c.getResponseCode() / 100 == 2) handleResponseCommands(c);
-            c.disconnect();
         } catch (Exception ignored) {
             /* offline — the next beat retries */
+        } finally {
+            if (c != null) c.disconnect();
         }
     }
 
