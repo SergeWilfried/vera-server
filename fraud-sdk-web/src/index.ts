@@ -212,6 +212,7 @@ export const FraudSdk = {
       sdk: config.sdk ?? 'web/0.1.0',
       flushIntervalMs: config.flushIntervalMs ?? 5000,
       heartbeatMs: config.heartbeatMs ?? 30000,
+      tenantHashSalt: config.tenantHashSalt ?? '',
       debug: config.debug ?? false,
     };
     const install = getInstall();
@@ -308,13 +309,21 @@ export const FraudSdk = {
     return state ? state.transport.flush() : Promise.resolve();
   },
 
-  /** SHA-256 hex of an identifier — hash PII before setUser. */
+  /** SHA-256 hex of an identifier — hash PII before setUser. Contract
+   *  shared with the mobile SDKs, byte for byte:
+   *  sha256(salt_utf8 || trim(value)_utf8), lowercase hex. */
   async hash(value: string): Promise<string> {
     if (typeof crypto !== 'undefined' && crypto.subtle) {
-      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+      const buf = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode((state?.cfg.tenantHashSalt ?? '') + value.trim()),
+      );
       return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
     }
-    return value;
+    // crypto.subtle needs a secure context. Refusing beats the old fallback
+    // of returning the input, which sent the RAW identifier as userRef —
+    // never leak the PII we exist to protect just because the page is HTTP.
+    return '';
   },
 
   /** Test/teardown hook. */

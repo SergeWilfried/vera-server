@@ -50,6 +50,11 @@ export interface SdkConfig {
    *  would never hear about them; this posts an empty batch at most this often
    *  to collect them. 0 disables polling. Default 30000. */
   heartbeatMs?: number;
+  /** Per-tenant salt for FraudSdk.hash(). MUST equal the Android SDK's
+   *  tenantHashSalt for the same tenant — the server matches userRef
+   *  verbatim, so differing salts split one customer into two identities
+   *  and silently break cross-platform device/user linking. Default ''. */
+  tenantHashSalt?: string;
   /** Hard deadline for every request the SDK makes (ms). The SDK must never
    *  hold up the host app's login when the collector is unreachable, so this
    *  bounds the wait rather than trusting the platform socket. Default 10000. */

@@ -19,7 +19,7 @@ import type { SdkConfig, SdkEvent, LocalRisk, CallSignals } from './types';
 import { Transport, type ServerCommand } from './wire/transport';
 import { fetchWithTimeout, DEFAULT_TIMEOUT_MS } from './wire/http';
 import { RiskTracker } from './core/risk';
-import { newId, hash as sha256 } from './platform/crypto';
+import { newId, hash as sha256, setHashSalt } from './platform/crypto';
 import { getInstall } from './platform/storage';
 import { fingerprint } from './platform/device';
 import { keystrokeProps, type KeystrokeProps } from './collectors/keystroke';
@@ -253,9 +253,11 @@ export const FraudSdk = {
       flushIntervalMs: config.flushIntervalMs ?? 5000,
       heartbeatMs: config.heartbeatMs ?? 30000,
       timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      tenantHashSalt: config.tenantHashSalt ?? '',
       remoteAccessPollMs: config.remoteAccessPollMs ?? 4000,
       callPollMs: config.callPollMs ?? 4000,
     };
+    setHashSalt(cfg.tenantHashSalt);
     const install = await getInstall();
     const installId = install.id;
     const transport = new Transport(cfg, installId, newId, () => state?.sessionId ?? '');

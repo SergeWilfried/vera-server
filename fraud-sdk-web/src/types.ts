@@ -28,6 +28,10 @@ export interface SdkConfig {
    *  would never hear about them; this posts an empty batch at most this often
    *  to collect them. 0 disables polling. Default 30000. */
   heartbeatMs?: number;
+  /** Per-tenant salt for FraudSdk.hash(). MUST equal the mobile SDKs'
+   *  tenantHashSalt — the server matches userRef verbatim, so differing
+   *  salts split one customer into two identities across platforms. */
+  tenantHashSalt?: string;
   /** Log integration problems (e.g. a failed token mint) to the console. */
   debug?: boolean;
 }
