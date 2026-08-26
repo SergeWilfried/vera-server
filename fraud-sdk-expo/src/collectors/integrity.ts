@@ -4,15 +4,28 @@
 // new-account fraud, and they are exactly what the scoring engine's
 // DEVICE_INTEGRITY / EMULATOR / DEBUG_BUILD signals consume.
 //
-// Everything here comes from expo-device, so it works in Expo Go and needs no
-// bundled native module and no permissions. Two fields the native Android SDK
-// can report are deliberately NOT faked here:
-//   • installerPackage — RN has no access, and the server treats an ABSENT
-//     field as unknown (an empty string is itself the sideload indicator), so
-//     omitting it is the correct wire behaviour, not a gap in the payload.
-//   • accessibilityServices — already reported by the remote-access collector.
+// The expo-device fields work in Expo Go with no native module. The fields
+// JavaScript cannot reach — hookingFramework, installerPackage,
+// devOptionsEnabled, the full enabled-accessibility-service list — come from
+// the bundled VeraAppIntegrity module (a port of the native Android SDK's
+// IntegrityCollector) and are merged in when it is present. In Expo Go the
+// module is absent and those fields are OMITTED, never fabricated: the server
+// treats an absent installerPackage as unknown, while an empty string is
+// itself the sideload indicator.
 
+import { requireOptionalNativeModule } from 'expo';
 import type { EmitFn } from './types';
+
+interface AppIntegrityNative {
+  getStatus(): Promise<{
+    hookingFramework: string;
+    installerPackage: string;
+    devOptionsEnabled: boolean;
+    accessibilityServices: string[];
+  }>;
+}
+
+const native = requireOptionalNativeModule<AppIntegrityNative>('VeraAppIntegrity');
 
 interface DeviceModule {
   isDevice: boolean;
@@ -33,8 +46,17 @@ export interface IntegrityStatus {
   emulatorLikely: boolean;
   debuggable: boolean;
   /** Android: "install unknown apps" allowed. Informational — the server's
-   *  sideload signal keys off installerPackage, which RN cannot read. */
+   *  sideload signal keys off installerPackage. */
   sideLoadingEnabled?: boolean;
+  /** 'frida' | 'xposed' | 'substrate' | ''. Native module only. */
+  hookingFramework?: string;
+  /** '' = manual install (sideload). Present only with the native module —
+   *  the server reads absence as unknown. */
+  installerPackage?: string;
+  /** Native module only. */
+  devOptionsEnabled?: boolean;
+  /** All enabled accessibility-service packages. Native module only. */
+  accessibilityServices?: string[];
 }
 
 /** Collect the integrity snapshot; null when expo-device is unavailable. */
@@ -52,6 +74,14 @@ export async function collectIntegrity(): Promise<IntegrityStatus | null> {
   } catch {
     sideLoadingEnabled = undefined;
   }
+  let nat: Awaited<ReturnType<AppIntegrityNative['getStatus']>> | null = null;
+  if (native) {
+    try {
+      nat = await native.getStatus();
+    } catch {
+      nat = null;
+    }
+  }
   return {
     rootLikely,
     // isDevice is false on simulators and emulators — the same tell the
@@ -59,6 +89,7 @@ export async function collectIntegrity(): Promise<IntegrityStatus | null> {
     emulatorLikely: device.isDevice === false,
     debuggable: typeof __DEV__ !== 'undefined' && __DEV__,
     ...(sideLoadingEnabled === undefined ? {} : { sideLoadingEnabled }),
+    ...(nat ?? {}),
   };
 }
 

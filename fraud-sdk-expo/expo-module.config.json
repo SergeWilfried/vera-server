@@ -8,7 +8,8 @@
       "com.veratools.fraudsdk.VeraRemoteAccessModule",
       "com.veratools.fraudsdk.VeraCallSignalsModule",
       "com.veratools.fraudsdk.VeraNetIntegrityModule",
-      "com.veratools.fraudsdk.VeraContainerModule"
+      "com.veratools.fraudsdk.VeraContainerModule",
+      "com.veratools.fraudsdk.VeraAppIntegrityModule"
     ]
   },
   "apple": {

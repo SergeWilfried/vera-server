@@ -9,9 +9,11 @@ import android.widget.EditText;
 import com.fraudsdk.capture.KeystrokeCapture;
 import com.fraudsdk.capture.TouchCapture;
 import com.fraudsdk.collectors.CallStateWatch;
+import com.fraudsdk.collectors.ContainerCollector;
 import com.fraudsdk.collectors.DeviceFingerprintCollector;
 import com.fraudsdk.collectors.IntegrityCollector;
 import com.fraudsdk.collectors.LocationCollector;
+import com.fraudsdk.collectors.NetIntegrityCollector;
 import com.fraudsdk.collectors.RemoteAccessCollector;
 import com.fraudsdk.collectors.SimTelemetryCollector;
 import com.fraudsdk.session.SessionContext;
@@ -90,6 +92,10 @@ public final class FraudSdk {
                             new LocationCollector(app, config).collect());
                     sdk.sessionManager.enqueuePassive("REMOTE_ACCESS",
                             RemoteAccessCollector.snapshot(app));
+                    sdk.sessionManager.enqueuePassive("NET_INTEGRITY",
+                            new NetIntegrityCollector(app).collect());
+                    sdk.sessionManager.enqueuePassive("APP_CONTAINER",
+                            new ContainerCollector(app).collect());
                 });
 
                 sdk.uploader.start();
