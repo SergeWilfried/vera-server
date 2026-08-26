@@ -1400,3 +1400,28 @@ func (s *Server) tenantOfAnalystEmail(ctx context.Context, email string) string 
 		`SELECT tenant_id FROM analysts WHERE lower(email)=lower($1) LIMIT 1`, email).Scan(&t)
 	return t
 }
+
+// riskPreview re-bands the tenant's recent scored payments under proposed
+// cutoffs — "against your last N days, these bands would have held X payments
+// instead of Y". Scores are already stored per decision, so this is pure
+// counting: no re-scoring, no side effects, cheap enough to run per keystroke.
+func (s *Server) riskPreview(ctx context.Context, tenantID string, stepUp, hold, days int) (map[string]any, error) {
+	row := s.pool.QueryRow(ctx, `
+		SELECT count(*),
+		       count(*) FILTER (WHERE score >= $2),
+		       count(*) FILTER (WHERE score >= $3 AND score < $2),
+		       count(*) FILTER (WHERE decision = 'HOLD'),
+		       count(*) FILTER (WHERE decision = 'STEP_UP')
+		FROM decisions
+		WHERE tenant_id = $1 AND created_at > now() - ($4 || ' days')::interval`,
+		tenantID, hold, stepUp, strconv.Itoa(days))
+	var total, propHold, propStepUp, curHold, curStepUp int
+	if err := row.Scan(&total, &propHold, &propStepUp, &curHold, &curStepUp); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"days": days, "total": total,
+		"proposed": map[string]int{"hold": propHold, "stepUp": propStepUp, "allow": total - propHold - propStepUp},
+		"current":  map[string]int{"hold": curHold, "stepUp": curStepUp, "allow": total - curHold - curStepUp},
+	}, nil
+}

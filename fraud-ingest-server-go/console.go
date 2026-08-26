@@ -296,6 +296,19 @@ func (s *Server) consoleRoutes() []consoleRoute {
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				return ok(s.getSettings(ctx, t))
 			}),
+		R("GET", `^/v1/console/risk-preview$`, rankRead,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				stepUp, _ := strconv.Atoi(q.Get("stepUp"))
+				hold, _ := strconv.Atoi(q.Get("hold"))
+				if stepUp <= 0 || hold <= stepUp || hold > 100 {
+					return map[string]any{"error": "stepUp and hold required, 0 < stepUp < hold <= 100"}, 400
+				}
+				days := 30
+				if v, err := strconv.Atoi(q.Get("days")); err == nil && v > 0 && v <= 365 {
+					days = v
+				}
+				return ok(s.riskPreview(ctx, t, stepUp, hold, days))
+			}),
 		R("GET", `^/v1/console/audit$`, rankSenior,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				offset := 0

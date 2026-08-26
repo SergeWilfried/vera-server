@@ -587,6 +587,19 @@ const scenarios = {
       console.log(`${okBase && okCons && okAggr && okBad ? '✓' : '✗'} bands: same session ` +
         `(score ${base.riskScore}) -> default=${base.decision} conservative=${cons.decision} ` +
         `aggressive=${aggr.decision} malformed=${bad.decision}`);
+      // Impact preview: re-banding stored decisions must be internally
+      // consistent, and tighter bands can only hold MORE, never fewer.
+      const prev = (su, h) => api(`/v1/console/risk-preview?stepUp=${su}&hold=${h}`, { token: admin });
+      const pDef = (await prev(55, 85)).body;
+      const pCons = (await prev(40, 50)).body;
+      const sums = (x) => x.proposed.hold + x.proposed.stepUp + x.proposed.allow;
+      if (!(pDef.total > 0 && sums(pDef) === pDef.total && sums(pCons) === pCons.total)) {
+        console.log('  ✗ preview counts inconsistent', pDef, pCons); process.exitCode = 1;
+      } else if (pCons.proposed.hold < pDef.proposed.hold) {
+        console.log('  ✗ tighter bands held fewer payments'); process.exitCode = 1;
+      } else {
+        console.log(`  ✓ preview over ${pDef.total} decisions: holds ${pDef.proposed.hold} (55/85) -> ${pCons.proposed.hold} (40/50)`);
+      }
     } finally {
       await setBands(55, 85);              // restore defaults whatever happened
     }
