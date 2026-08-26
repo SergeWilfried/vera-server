@@ -1342,40 +1342,36 @@ func (s *Server) auditWrite(ctx context.Context, tenantID string, actor Actor,
 	}
 }
 
-// listAudit returns audit rows newest-first, keyset-paginated on id.
-func (s *Server) listAudit(ctx context.Context, tenantID string, limit int,
-	beforeID int64, actorFilter string) (map[string]any, error) {
+// listAudit returns one page of audit rows, newest-first, with the filtered
+// total so the console can render numbered pagination like every other table.
+func (s *Server) listAudit(ctx context.Context, tenantID string, limit, offset int,
+	actorFilter string) (map[string]any, error) {
 	where := "l.tenant_id=$1"
 	args := []any{tenantID}
-	if beforeID > 0 {
-		args = append(args, beforeID)
-		where += fmt.Sprintf(" AND l.id < $%d", len(args))
-	}
 	if actorFilter != "" {
 		args = append(args, "%"+actorFilter+"%")
 		where += fmt.Sprintf(" AND (l.actor ILIKE $%d OR a.name ILIKE $%d)", len(args), len(args))
 	}
-	args = append(args, limit)
+	join := `FROM audit_log l
+		 LEFT JOIN analysts a
+		   ON a.tenant_id = l.tenant_id AND lower(a.email) = lower(l.actor)
+		 WHERE ` + where
+	var total int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) `+join, args...).Scan(&total); err != nil {
+		return nil, err
+	}
+	args = append(args, limit, offset)
 	// actor_name resolves at read time from the analysts table (display
 	// names change; the append-only log keeps the stable identity — email).
 	rows, err := queryMaps(ctx, s.pool,
 		`SELECT l.id, l.at, l.actor, l.actor_role, l.action, l.target, l.status, l.detail,
 		        coalesce(nullif(a.name, ''), '') AS actor_name
-		 FROM audit_log l
-		 LEFT JOIN analysts a
-		   ON a.tenant_id = l.tenant_id AND lower(a.email) = lower(l.actor)
-		 WHERE `+where+`
-		 ORDER BY l.id DESC LIMIT $`+strconv.Itoa(len(args)), args...)
+		 `+join+`
+		 ORDER BY l.id DESC LIMIT $`+strconv.Itoa(len(args)-1)+` OFFSET $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
 		return nil, err
 	}
-	var next int64
-	if len(rows) == limit {
-		if id, ok := rows[len(rows)-1]["id"].(int64); ok {
-			next = id
-		}
-	}
-	return map[string]any{"entries": rows, "nextBefore": next}, nil
+	return map[string]any{"entries": rows, "total": total}, nil
 }
 
 // tenantOfAnalystEmail resolves which tenant an email belongs to, for

@@ -298,11 +298,11 @@ func (s *Server) consoleRoutes() []consoleRoute {
 			}),
 		R("GET", `^/v1/console/audit$`, rankSenior,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
-				var before int64
-				if v, err := strconv.ParseInt(q.Get("before"), 10, 64); err == nil && v > 0 {
-					before = v
+				offset := 0
+				if v, err := strconv.Atoi(q.Get("offset")); err == nil && v > 0 && v <= 100000 {
+					offset = v
 				}
-				return ok(s.listAudit(ctx, t, limitOf(q, 50, 200), before, strings.TrimSpace(q.Get("actor"))))
+				return ok(s.listAudit(ctx, t, limitOf(q, 20, 200), offset, strings.TrimSpace(q.Get("actor"))))
 			}),
 		R("PATCH", `^/v1/console/settings$`, rankAdmin,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
