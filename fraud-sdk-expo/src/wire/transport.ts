@@ -6,6 +6,7 @@
 import { Platform } from 'react-native';
 import type { SdkConfig, SdkEvent } from '../types';
 import { fetchWithTimeout } from './http';
+import { takePersistedQueue, persistQueue, clearPersistedQueue } from '../platform/queueStore';
 
 type TransportCfg = Required<Pick<SdkConfig, 'tenantId' | 'siteKey' | 'collectorUrl'>> &
   Pick<SdkConfig, 'sdk' | 'appKey'> &
@@ -31,6 +32,9 @@ export class Transport {
   /** Epoch ms of the last POST (upload or heartbeat) — paces the poll. */
   private lastPostAt = 0;
 
+  /** Debounces disk snapshots so a burst of touch events costs one write. */
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(
     private cfg: TransportCfg,
     private installId: string,
@@ -41,6 +45,17 @@ export class Transport {
     private currentSessionId: () => string = () => '',
   ) {
     this.base = cfg.collectorUrl.replace(/\/$/, '');
+    // Store-and-forward: adopt whatever a previous run left on disk. The
+    // restored events keep their own sessionId/ts/eventId, so history stays
+    // truthful and a crash-resend is deduped server-side on (tenant, eventId).
+    for (const line of takePersistedQueue()) {
+      try {
+        const ev = JSON.parse(line) as SdkEvent;
+        if (ev && ev.type && this.queue.length < 500) this.queue.push(ev);
+      } catch {
+        /* torn write from a mid-write kill — drop the line */
+      }
+    }
   }
 
   start(): void {
@@ -51,6 +66,18 @@ export class Transport {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = null;
+  }
+
+  /** Snapshot the queue to disk soon (debounced): survives an app kill with
+   *  events still queued, at one write per burst instead of one per event. */
+  private schedulePersist(): void {
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      persistQueue(this.queue.map((e) => JSON.stringify(e)));
+    }, 1000);
   }
 
   enqueue(ev: SdkEvent): void {
@@ -58,6 +85,7 @@ export class Transport {
     // stable id is what lets the server drop the resent copies.
     if (!ev.eventId) ev.eventId = this.idGen();
     if (this.queue.length < 500) this.queue.push(ev);
+    this.schedulePersist();
   }
 
   private ndjson(batch: SdkEvent[]): string {
@@ -122,17 +150,33 @@ export class Transport {
       );
       // The batch response may carry server commands (analyst kill switch).
       // Parse defensively — a malformed body must never break the upload loop.
-      if (res.ok && this.onCommands) {
-        try {
-          const data = (await res.json()) as { commands?: ServerCommand[] } | null;
-          if (data?.commands?.length) this.onCommands(data.commands);
-        } catch {
-          /* no JSON body — fine */
+      if (res.ok) {
+        if (this.onCommands) {
+          try {
+            const data = (await res.json()) as { commands?: ServerCommand[] } | null;
+            if (data?.commands?.length) this.onCommands(data.commands);
+          } catch {
+            /* no JSON body — fine */
+          }
         }
+        // Uploaded: the disk snapshot is stale. Rewrite or clear it now so a
+        // kill right after a successful flush cannot resurrect sent events
+        // beyond what (tenant, eventId) dedupe already absorbs.
+        if (this.queue.length === 0) clearPersistedQueue();
+        else this.schedulePersist();
+        return;
       }
-    } catch {
-      // best-effort telemetry: re-queue a bounded tail for the next tick
+      // Same retry contract as the Android SDK's uploader: a 4xx (except 429)
+      // is a poison batch — drop it rather than retry forever; 5xx and 429
+      // are the server's problem — keep the events and try again.
+      if (res.status >= 400 && res.status < 500 && res.status !== 429) return;
       this.queue = batch.slice(-100).concat(this.queue);
+      persistQueue(this.queue.map((e) => JSON.stringify(e)));
+    } catch {
+      // Offline — exactly the moment a kill would lose data, so persist NOW,
+      // not on the debounce.
+      this.queue = batch.slice(-100).concat(this.queue);
+      persistQueue(this.queue.map((e) => JSON.stringify(e)));
     }
   }
 }
