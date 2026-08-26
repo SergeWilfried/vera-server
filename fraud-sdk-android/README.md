@@ -71,10 +71,28 @@ invalidate the app session server-side regardless.
 | Keystroke timing | capture/KeystrokeCapture | opt-in per field (FraudSdk.captureKeystrokes) |
 | Device fingerprint | collectors/DeviceFingerprintCollector | session start |
 | SIM telemetry + swap flag | collectors/SimTelemetryCollector | session start |
+| VPN / proxy / interception-CA | collectors/NetIntegrityCollector | session start |
+| Cloned-container detection | collectors/ContainerCollector | session start |
 | Root/emulator/hooking/accessibility | collectors/IntegrityCollector | session start |
 | Location (geohash-5/7, tiered) + mock-provider flag | collectors/LocationCollector | session start |
 | Remote access / screen sharing | collectors/RemoteAccessCollector | session start + on business events |
 | Business events | events/BusinessEvent | explicit SessionContext calls |
+
+### SIM-swap detection tiers
+
+`READ_PHONE_STATE` is capped at `maxSdkVersion="29"` in the SDK manifest — a
+deliberate trade: no runtime permission prompt, at the cost of a coarser
+swap diff on modern devices. The payload's `basis` field says which tier
+produced the flag:
+
+- **`subscription-info`** (Android 10 and below, or hosts that request the
+  permission themselves): per-slot carrier identity — catches any swap that
+  changes slot, carrier, or MCC/MNC.
+- **`carrier-identity`** (Android 11+): the SIM's own MCC+MNC, readable
+  without any permission — catches cross-carrier swaps (the common takeover
+  shape in WAEMU markets) but **not** a same-carrier replacement SIM. For
+  that case the platform roadmap is an MNO SIM-swap-age lookup, pending an
+  operator API.
 
 ### Remote-access (RAT / on-device-fraud) detection
 

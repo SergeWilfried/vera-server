@@ -17,8 +17,21 @@ import java.util.List;
 /**
  * SIM telemetry — the WAEMU-critical signal set.
  * ICCID is unreadable without carrier privileges, so SIM-swap detection =
- * subscription-info diff vs the previous session (simChangedSinceLastSession)
+ * a profile diff vs the previous session (simChangedSinceLastSession),
  * corroborated server-side with SIM-age heuristics.
+ *
+ * Two tiers, reported in "basis" (same contract as the Expo collector):
+ *
+ *   - "subscription-info": READ_PHONE_STATE held (manifest caps it at
+ *     maxSdkVersion=29, so in practice Android 10 and below, or hosts that
+ *     request it themselves). Per-slot carrier identity — catches any swap
+ *     that changes slot/carrier/MCC/MNC.
+ *   - "carrier-identity": everything newer. The permission-free SIM identity
+ *     (simOperator = the SIM's own MCC+MNC, not the network's) — catches
+ *     cross-carrier swaps, which is the common takeover shape here, but NOT
+ *     a same-carrier replacement SIM. That trade (no runtime permission
+ *     prompt in exchange for a coarser diff on modern devices) is
+ *     deliberate; the tier makes it visible instead of silent.
  */
 public final class SimTelemetryCollector {
 
@@ -44,8 +57,10 @@ public final class SimTelemetryCollector {
             }
 
             StringBuilder profile = new StringBuilder();
+            String basis = "carrier-identity";
             if (hasPermission(Manifest.permission.READ_PHONE_STATE)
                     && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                basis = "subscription-info";
                 SubscriptionManager sub = (SubscriptionManager)
                         app.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE);
                 List<SubscriptionInfo> subs =
@@ -68,11 +83,26 @@ public final class SimTelemetryCollector {
                 }
             }
 
-            // SIM-change flag: diff against the profile hash from last session
+            // Without subscription access the profile was empty, which made the
+            // diff hash("") vs hash("") — the swap flag could NEVER fire on
+            // Android 11+. Fall back to the SIM's own identity, which is
+            // readable without any permission and changes on a cross-carrier
+            // swap.
+            if (profile.length() == 0 && tm != null) {
+                String simOp = tm.getSimOperator();
+                if (simOp != null && !simOp.isEmpty()) profile.append("sim:").append(simOp);
+            }
+            o.put("basis", basis);
+
+            // SIM-change flag: diff against the profile hash from last session.
+            // The stored value is prefixed with its basis so a permission
+            // change (or this SDK upgrade) resets the comparison instead of
+            // firing a false SIM_CHANGED against a hash built by other rules.
             SharedPreferences sp = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
             String prev = sp.getString(KEY_SIM_PROFILE, null);
-            String curr = Integer.toHexString(profile.toString().hashCode());
-            o.put("simChangedSinceLastSession", prev != null && !prev.equals(curr));
+            String curr = basis + ":" + Integer.toHexString(profile.toString().hashCode());
+            boolean comparable = prev != null && prev.startsWith(basis + ":");
+            o.put("simChangedSinceLastSession", comparable && !prev.equals(curr));
             sp.edit().putString(KEY_SIM_PROFILE, curr).apply();
         } catch (Exception ignored) {}
         return o;
