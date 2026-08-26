@@ -1345,21 +1345,27 @@ func (s *Server) auditWrite(ctx context.Context, tenantID string, actor Actor,
 // listAudit returns audit rows newest-first, keyset-paginated on id.
 func (s *Server) listAudit(ctx context.Context, tenantID string, limit int,
 	beforeID int64, actorFilter string) (map[string]any, error) {
-	where := "tenant_id=$1"
+	where := "l.tenant_id=$1"
 	args := []any{tenantID}
 	if beforeID > 0 {
 		args = append(args, beforeID)
-		where += fmt.Sprintf(" AND id < $%d", len(args))
+		where += fmt.Sprintf(" AND l.id < $%d", len(args))
 	}
 	if actorFilter != "" {
 		args = append(args, "%"+actorFilter+"%")
-		where += fmt.Sprintf(" AND actor ILIKE $%d", len(args))
+		where += fmt.Sprintf(" AND (l.actor ILIKE $%d OR a.name ILIKE $%d)", len(args), len(args))
 	}
 	args = append(args, limit)
+	// actor_name resolves at read time from the analysts table (display
+	// names change; the append-only log keeps the stable identity — email).
 	rows, err := queryMaps(ctx, s.pool,
-		`SELECT id, at, actor, actor_role, action, target, status, detail
-		 FROM audit_log WHERE `+where+`
-		 ORDER BY id DESC LIMIT $`+strconv.Itoa(len(args)), args...)
+		`SELECT l.id, l.at, l.actor, l.actor_role, l.action, l.target, l.status, l.detail,
+		        coalesce(nullif(a.name, ''), '') AS actor_name
+		 FROM audit_log l
+		 LEFT JOIN analysts a
+		   ON a.tenant_id = l.tenant_id AND lower(a.email) = lower(l.actor)
+		 WHERE `+where+`
+		 ORDER BY l.id DESC LIMIT $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
 		return nil, err
 	}
