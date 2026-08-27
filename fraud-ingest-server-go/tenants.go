@@ -277,16 +277,6 @@ func runTenantCLI(pool *pgxpool.Pool, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: tenant <create|list|rotate-key|revoke-key|rotate-app-key> …")
 	}
-	newKeyHex := func() string {
-		b := make([]byte, 16)
-		rand.Read(b)
-		return hex.EncodeToString(b) // 32 chars; its ASCII bytes are the HMAC key
-	}
-	newKid := func() string {
-		b := make([]byte, 3)
-		rand.Read(b)
-		return "k" + hex.EncodeToString(b)
-	}
 	switch args[0] {
 	case "create":
 		if len(args) < 2 {
@@ -393,4 +383,96 @@ func runTenantCLI(pool *pgxpool.Pool, args []string) error {
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
 	return nil
+}
+
+func newKeyHex() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b) // 32 chars; its ASCII bytes are the HMAC key
+}
+
+func newKid() string {
+	b := make([]byte, 3)
+	rand.Read(b)
+	return "k" + hex.EncodeToString(b)
+}
+
+// ---------- console-driven credential rotation ----------
+// Same operations as the operator CLI above, exposed to tenant admins: an
+// incident response must not depend on someone with SSH. Every call lands in
+// the audit trail via the console dispatcher.
+
+// listTenantKeys returns the signing-key versions (never the secrets).
+func (s *Server) listTenantKeys(ctx context.Context, tenantID string) ([]map[string]any, error) {
+	return queryMaps(ctx, s.pool,
+		`SELECT kid, state, created_at FROM tenant_keys
+		 WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+}
+
+// rotateTenantKey retires the active signing key and mints a new one.
+// The plaintext secret is returned ONCE for the admin to hand to the backend
+// team; only the envelope-encrypted form is stored.
+func (s *Server) rotateTenantKey(ctx context.Context, tenantID string) (map[string]any, error) {
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE tenant_keys SET state='retiring'
+		 WHERE tenant_id=$1 AND state='active'`, tenantID); err != nil {
+		return nil, err
+	}
+	key := newKeyHex()
+	enc, err := encryptKey([]byte(key))
+	if err != nil {
+		return nil, err
+	}
+	kid := newKid()
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO tenant_keys (tenant_id, kid, key_enc, state)
+		 VALUES ($1, $2, $3, 'active')`, tenantID, kid, enc); err != nil {
+		return nil, err
+	}
+	s.tryReloadTenants()
+	return map[string]any{"kid": kid, "key": key,
+		"note": "previous active key is now retiring — it still verifies; revoke it once the backend fleet has switched"}, nil
+}
+
+// revokeTenantKey hard-stops one key version. Refuses to revoke the last
+// active key — a tenant that can no longer sign anything is an outage, and
+// outages should require the CLI's deliberateness, not one misclick.
+func (s *Server) revokeTenantKey(ctx context.Context, tenantID, kid string) error {
+	var others int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM tenant_keys
+		 WHERE tenant_id=$1 AND state='active' AND kid<>$2`, tenantID, kid).Scan(&others); err != nil {
+		return err
+	}
+	if others == 0 {
+		return fmt.Errorf("refusing to revoke the only active key — rotate first")
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE tenant_keys SET state='revoked' WHERE tenant_id=$1 AND kid=$2`, tenantID, kid)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no such key %s", kid)
+	}
+	s.tryReloadTenants()
+	return nil
+}
+
+// rotateAppKey replaces the native mobile credential. Cuts off binaries still
+// pinning the old key — fleets recover via app release, which is exactly the
+// point when the old key has leaked.
+func (s *Server) rotateAppKey(ctx context.Context, tenantID string) (map[string]any, error) {
+	appKey := "app_" + tenantID + "_" + newKeyHex()[:12]
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE tenants SET app_key=$2 WHERE id=$1`, tenantID, appKey)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, fmt.Errorf("no such tenant %s", tenantID)
+	}
+	s.tryReloadTenants()
+	return map[string]any{"appKey": appKey,
+		"note": "apps shipping the previous key can no longer upload — release a build with the new key"}, nil
 }

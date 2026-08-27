@@ -326,6 +326,25 @@ func (s *Server) consoleRoutes() []consoleRoute {
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				return ok(s.listApiKeys(ctx, t))
 			}),
+		R("GET", `^/v1/console/tenant-keys$`, rankAdmin,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				return ok(s.listTenantKeys(ctx, t))
+			}),
+		R("POST", `^/v1/console/tenant-keys/rotate$`, rankAdmin,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				return ok(s.rotateTenantKey(ctx, t))
+			}),
+		R("POST", `^/v1/console/tenant-keys/([\w-]+)/revoke$`, rankAdmin,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				if err := s.revokeTenantKey(ctx, t, m[1]); err != nil {
+					return map[string]any{"error": err.Error()}, 400
+				}
+				return map[string]any{"ok": true}, 200
+			}),
+		R("POST", `^/v1/console/app-key/rotate$`, rankAdmin,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				return ok(s.rotateAppKey(ctx, t))
+			}),
 		R("POST", `^/v1/console/api-keys$`, rankAdmin,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				row, errStr, err := s.createApiKey(ctx, t, str(b, "name"), str(b, "scope"))
