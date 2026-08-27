@@ -431,7 +431,7 @@ func (s *Server) rotateTenantKey(ctx context.Context, tenantID string) (map[stri
 	}
 	s.tryReloadTenants()
 	return map[string]any{"kid": kid, "key": key,
-		"note": "previous active key is now retiring — it still verifies; revoke it once the backend fleet has switched"}, nil
+		"note": "previous key is retiring: uploads signed with it still verify, but outbound webhooks sign with the NEW key immediately — update the webhook verifier first, then revoke the old key once the fleet has switched"}, nil
 }
 
 // revokeTenantKey hard-stops one key version. Refuses to revoke the last
