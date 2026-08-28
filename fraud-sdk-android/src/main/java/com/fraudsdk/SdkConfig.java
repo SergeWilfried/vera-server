@@ -25,6 +25,10 @@ public final class SdkConfig {
      *  most this often to collect them. 0 disables polling. */
     public final long heartbeatMs;
     public final boolean playIntegrityEnabled;
+    /** Google Cloud project number for Play Integrity token requests.
+     *  0 (default) disables attestation; set it (with playIntegrityEnabled)
+     *  and include com.google.android.play:integrity in the app build. */
+    public final long cloudProjectNumber;
     public final LocationTier locationTier;
 
     public enum LocationTier { TIER0_NONE, TIER1_OPPORTUNISTIC_COARSE, TIER2_OPT_IN_FINE }
@@ -41,6 +45,7 @@ public final class SdkConfig {
         this.uploadIntervalMs = b.uploadIntervalMs;
         this.heartbeatMs = b.heartbeatMs;
         this.playIntegrityEnabled = b.playIntegrityEnabled;
+        this.cloudProjectNumber = b.cloudProjectNumber;
         this.locationTier = b.locationTier;
     }
 
@@ -57,6 +62,7 @@ public final class SdkConfig {
         private long uploadIntervalMs = 15 * 1000L;
         private long heartbeatMs = 30 * 1000L;
         private boolean playIntegrityEnabled = true;
+        private long cloudProjectNumber = 0L;
         private LocationTier locationTier = LocationTier.TIER1_OPPORTUNISTIC_COARSE;
 
         public Builder tenantId(String v) { this.tenantId = v; return this; }
@@ -69,6 +75,7 @@ public final class SdkConfig {
         public Builder uploadIntervalMs(long v) { this.uploadIntervalMs = v; return this; }
         public Builder heartbeatMs(long v) { this.heartbeatMs = v; return this; }
         public Builder playIntegrityEnabled(boolean v) { this.playIntegrityEnabled = v; return this; }
+        public Builder cloudProjectNumber(long v) { this.cloudProjectNumber = v; return this; }
         public Builder locationTier(LocationTier v) { this.locationTier = v; return this; }
 
         public SdkConfig build() {

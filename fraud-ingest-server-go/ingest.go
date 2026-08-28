@@ -89,6 +89,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		log.Printf("  %s%s", ev.Type, bits)
 	}
 
+	s.verifyAttestations(ctx, events)
 	stored, err := s.recordBatch(ctx, tenantID, installID, events)
 	if err != nil {
 		log.Printf("recordBatch: %v", err)

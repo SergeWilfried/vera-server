@@ -76,7 +76,26 @@ invalidate the app session server-side regardless.
 | Root/emulator/hooking/accessibility | collectors/IntegrityCollector | session start |
 | Location (geohash-5/7, tiered) + mock-provider flag | collectors/LocationCollector | session start |
 | Remote access / screen sharing | collectors/RemoteAccessCollector | session start + on business events |
+| Play Integrity attestation | collectors/AttestationCollector | session start (async) |
 | Business events | events/BusinessEvent | explicit SessionContext calls |
+
+### Play Integrity attestation
+
+The store-sanctioned verdict on device genuineness, app authenticity and
+install licensing — Google signs it, the ingest server verifies it with
+Google (`decodeIntegrityToken`), the SDK only forwards the opaque token as
+`PASSIVE_ATTESTATION`. Enable per tenant:
+
+1. app build: add `implementation 'com.google.android.play:integrity:1.3.0'`
+   (the SDK dependency is compileOnly);
+2. config: `.cloudProjectNumber(<your Google Cloud project number>)`;
+3. server: set `PLAY_INTEGRITY_CREDENTIALS_FILE` + `PLAY_INTEGRITY_PACKAGE`.
+
+The request nonce is SHA-256(sessionId|installId), so the server can bind
+the verdict to this session and reject replayed tokens. Failure states
+(missing Play services, library absent, API error) are emitted with a
+status instead of being swallowed — an Android session that *cannot*
+attest is itself scored (`ATTESTATION_MISSING`).
 
 ### SIM-swap detection tiers
 

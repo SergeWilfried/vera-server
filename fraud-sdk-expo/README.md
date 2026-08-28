@@ -118,7 +118,14 @@ FraudSdk.reportRemoteAccess(true); // → local banner + PASSIVE_REMOTE_ACCESS
 | Touch dynamics (duration, path, straightness) | `PanResponder` | `PASSIVE_TOUCH_STROKES` |
 | Keystroke timing + paste heuristic | `TextInput` | `PASSIVE_KEYSTROKES` |
 | Screen-share / recording / remote-control | native module (Android) | `PASSIVE_REMOTE_ACCESS` |
+| Store attestation — Play Integrity (Android, set `cloudProjectNumber`) / App Attest (iOS, automatic) | native modules | `PASSIVE_ATTESTATION` |
 | Login / payee / transfer / step-up | your calls | `BIZ_*` |
+
+Attestation tokens are opaque to the SDK and verified server-side (see the
+ingest server README); the request is nonce-bound to the session, and
+unavailability is reported rather than hidden — it is a scoring signal.
+In Expo Go both attestation modules are absent and the SDK emits
+`UNAVAILABLE:expo-go`, which the server treats as expected.
 
 ## Privacy
 

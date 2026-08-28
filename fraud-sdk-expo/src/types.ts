@@ -41,6 +41,10 @@ export interface SdkConfig {
   appKey?: string;
   /** Collector base URL. */
   collectorUrl: string;
+  /** Google Cloud project number for Play Integrity attestation (Android).
+   *  Unset disables the Play Integrity request; iOS App Attest needs no
+   *  configuration and runs whenever the native module is present. */
+  cloudProjectNumber?: number;
   /** X-Sdk header value. */
   sdk?: string;
   /** Batch upload cadence (ms). */

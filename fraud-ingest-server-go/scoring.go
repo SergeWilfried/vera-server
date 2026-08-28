@@ -715,6 +715,46 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 		break
 	}
 
+	// --- attestation (Play Integrity / App Attest) ------------------------
+	// The verdict was resolved with Google at ingest (attestation.go); the
+	// scoring path never makes a network call. A verified verdict that fails
+	// any check is the strongest device signal we have — Google itself says
+	// the device or app is not genuine, or the token was replayed from
+	// another session. A missing/errored attestation on Android weighs
+	// lightly on its own: Play services are genuinely absent on some
+	// handsets, so it earns its keep in combination, like VPN_ACTIVE.
+	for _, e := range events {
+		if e.Type != "PASSIVE_ATTESTATION" {
+			continue
+		}
+		a, ok := parsePayload[attestationPayload](e.Payload)
+		if !ok {
+			continue
+		}
+		switch {
+		case a.Verdict != nil && a.Verdict.Verified:
+			var fail string
+			switch {
+			case !a.Verdict.NonceOK:
+				fail = "nonce mismatch (possible token replay)"
+			case !hasVerdict(a.Verdict.DeviceVerdicts, "MEETS_DEVICE_INTEGRITY"):
+				fail = "device verdict: " + strings.Join(a.Verdict.DeviceVerdicts, ",")
+			case a.Verdict.AppVerdict != "PLAY_RECOGNIZED":
+				fail = "app verdict: " + a.Verdict.AppVerdict
+			}
+			if fail != "" {
+				add("ATTESTATION_FAILED", "Store attestation failed verification", 40, fail)
+			}
+		case a.Provider == "PLAY_INTEGRITY" &&
+			(strings.HasPrefix(a.Status, "API_ERROR") || strings.HasPrefix(a.Status, "UNAVAILABLE")):
+			// Not scored for APP_ATTEST: unavailability is expected on
+			// TestFlight/dev-signed builds and the simulator.
+			add("ATTESTATION_MISSING", "Device attestation unavailable or errored", 10,
+				a.Provider+" "+a.Status)
+		}
+		break
+	}
+
 	// --- transport integrity (VPN / proxy / MITM) -------------------------
 	// Deliberately low weights for the tunnel signals. A VPN is ordinary
 	// consumer behaviour — privacy apps, corporate profiles, ad blockers that
@@ -1106,6 +1146,7 @@ func finish(signals []Signal, ctx *ScoringCtx) ScoreResult {
 		threat = "APP Scam"
 	case ctx.UserRef != "" &&
 		(has("REMOTE_ACCESS") || has("NEW_DEVICE_FOR_USER") || has("DEVICE_INTEGRITY") ||
+			has("ATTESTATION_FAILED") ||
 			has("SIDELOADED_APP") || has("DEBUG_BUILD") || has("STEP_UP_FAILED") ||
 			has("TXN_VELOCITY") || has("ACCESSIBILITY_SERVICES") || has("TOUCH_ANOMALY") ||
 			has("KEYSTROKE_ANOMALY") || has("MOUSE_ANOMALY") || has("HEADLESS_BROWSER") ||

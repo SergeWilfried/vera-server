@@ -43,6 +43,7 @@ import { reportIntegrity } from './collectors/integrity';
 import { reportLocation } from './collectors/location';
 import { reportSimTelemetry } from './collectors/simTelemetry';
 import { reportNetIntegrity } from './collectors/netIntegrity';
+import { reportAttestation } from './collectors/attestation';
 import { reportContainer } from './collectors/container';
 import { BusinessEvent } from './events';
 import { _setReporter } from './ui/InterventionSheet';
@@ -256,6 +257,7 @@ export const FraudSdk = {
       tenantHashSalt: config.tenantHashSalt ?? '',
       remoteAccessPollMs: config.remoteAccessPollMs ?? 4000,
       callPollMs: config.callPollMs ?? 4000,
+      cloudProjectNumber: config.cloudProjectNumber ?? 0,
     };
     setHashSalt(cfg.tenantHashSalt);
     const install = await getInstall();
@@ -289,6 +291,7 @@ export const FraudSdk = {
     void reportSimTelemetry(enqueue);
     void reportNetIntegrity(enqueue);
     void reportContainer(enqueue);
+    void reportAttestation(enqueue, state.sessionId, installId, cfg.cloudProjectNumber);
 
     const remoteNative = watch.start();     // false => no native module
     const callNative = callWatch.start();   // false => no native module

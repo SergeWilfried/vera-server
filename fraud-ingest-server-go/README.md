@@ -211,6 +211,20 @@ Deps: `pgx/v5`, `golang.org/x/crypto` (scrypt). Everything else stdlib.
     MASTER_KEY              (encrypts tenant HMAC keys at rest — set in prod)
     SDK_KEY                 dev tenant's seeded key (first boot only)
 
+    # Play Integrity verification (attestation.go); both required to enable.
+    # Unset -> PASSIVE_ATTESTATION events are stored unverified and only the
+    # device-reported status is scored.
+    PLAY_INTEGRITY_CREDENTIALS_FILE   /path/to/service-account.json
+    PLAY_INTEGRITY_PACKAGE            com.tenant.app
+
+Attestation scoring (`PASSIVE_ATTESTATION`): a Google-verified verdict that
+fails device integrity, app recognition, or the session-bound nonce scores
+`ATTESTATION_FAILED` (40, feeds the Account Takeover threat gate); a
+Play Integrity request that errored or was unavailable on-device scores
+`ATTESTATION_MISSING` (10). iOS App Attest events are stored for now
+(presence only); server-side verification of the Apple attestation object is
+the follow-up.
+
 ## Tenant key management
 
 Tenant config (webhook, site key, origins) and **versioned HMAC keys** live

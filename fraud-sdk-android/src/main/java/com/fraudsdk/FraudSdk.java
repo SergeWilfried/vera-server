@@ -96,6 +96,11 @@ public final class FraudSdk {
                             new NetIntegrityCollector(app).collect());
                     sdk.sessionManager.enqueuePassive("APP_CONTAINER",
                             new ContainerCollector(app).collect());
+                    // Store-sanctioned attestation; async, emits its own event
+                    if (config.playIntegrityEnabled) {
+                        com.fraudsdk.collectors.AttestationCollector
+                                .request(app, config, sdk.sessionManager);
+                    }
                 });
 
                 sdk.uploader.start();

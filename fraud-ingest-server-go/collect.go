@@ -157,6 +157,7 @@ func (s *Server) handleCollect(w http.ResponseWriter, r *http.Request) {
 		tenantID, r.Header.Get("X-Sdk"), short(installID, 8),
 		short(r.Header.Get("X-Session-Id"), 8), len(events))
 
+	s.verifyAttestations(ctx, events)
 	stored, err := s.recordBatch(ctx, tenantID, installID, events)
 	if err != nil {
 		log.Printf("collect recordBatch: %v", err)

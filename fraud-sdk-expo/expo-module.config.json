@@ -9,12 +9,14 @@
       "com.veratools.fraudsdk.VeraCallSignalsModule",
       "com.veratools.fraudsdk.VeraNetIntegrityModule",
       "com.veratools.fraudsdk.VeraContainerModule",
-      "com.veratools.fraudsdk.VeraAppIntegrityModule"
+      "com.veratools.fraudsdk.VeraAppIntegrityModule",
+      "com.veratools.fraudsdk.VeraPlayIntegrityModule"
     ]
   },
   "apple": {
     "modules": [
-      "VeraCallSignalsModule"
+      "VeraCallSignalsModule",
+      "VeraAppAttestModule"
     ]
   }
 }
