@@ -345,6 +345,34 @@ func (s *Server) consoleRoutes() []consoleRoute {
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				return ok(s.rotateAppKey(ctx, t))
 			}),
+		// Attestation config. Non-secret parts (playPackage, appAttestAppId,
+		// appAttestEnv) ride PATCH /settings under {"attestation": {...}};
+		// the Play service-account credential gets its own endpoints so the
+		// secret is write-only, validated on upload, and never round-tripped.
+		R("GET", `^/v1/console/attestation$`, rankAdmin,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				return s.attestationStatus(t), 200
+			}),
+		R("PUT", `^/v1/console/attestation/play-credentials$`, rankAdmin,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				sa := strings.TrimSpace(str(b, "serviceAccountJson"))
+				if sa == "" {
+					return map[string]any{"error": "serviceAccountJson is required"}, 400
+				}
+				out, err := s.setPlayCredentials(ctx, t, []byte(sa))
+				if err != nil {
+					log.Printf("setPlayCredentials: %v", err)
+					return map[string]any{"error": "internal"}, 500
+				}
+				if e, _ := out["error"].(string); e != "" {
+					return out, 400
+				}
+				return out, 200
+			}),
+		R("DELETE", `^/v1/console/attestation/play-credentials$`, rankAdmin,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				return ok(s.setPlayCredentials(ctx, t, nil))
+			}),
 		R("POST", `^/v1/console/api-keys$`, rankAdmin,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				row, errStr, err := s.createApiKey(ctx, t, str(b, "name"), str(b, "scope"))

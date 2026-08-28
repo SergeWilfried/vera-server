@@ -491,6 +491,69 @@ func (s *Server) revokeTenantKey(ctx context.Context, tenantID, kid string) erro
 	return nil
 }
 
+// setPlayCredentials validates, encrypts and stores the tenant's Play
+// Integrity service-account JSON (attestation.go decodes integrity tokens
+// with it). The credential is validated by actually parsing it — a JSON blob
+// that cannot sign a JWT would otherwise fail silently at verification time.
+// Empty saJSON clears the credential. The plaintext is never stored and
+// never returned; callers get the service-account email as the handle.
+func (s *Server) setPlayCredentials(ctx context.Context, tenantID string, saJSON []byte) (map[string]any, error) {
+	if len(saJSON) == 0 {
+		if _, err := s.pool.Exec(ctx,
+			`UPDATE tenants SET play_sa_enc=NULL WHERE id=$1`, tenantID); err != nil {
+			return nil, err
+		}
+		s.tryReloadTenants()
+		return map[string]any{"configured": false}, nil
+	}
+	v, err := newPlayIntegrityVerifier(saJSON, "validation-probe")
+	if err != nil {
+		return map[string]any{"error": "not a usable service-account credential: " + err.Error()}, nil
+	}
+	enc, err := encryptKey(saJSON)
+	if err != nil {
+		return nil, err
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE tenants SET play_sa_enc=$2 WHERE id=$1`, tenantID, enc)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, fmt.Errorf("no such tenant %s", tenantID)
+	}
+	s.tryReloadTenants()
+	return map[string]any{"configured": true, "clientEmail": v.clientEmail}, nil
+}
+
+// attestationStatus reports the tenant's EFFECTIVE attestation configuration
+// (tenant registry first, env fallback) without ever exposing the credential.
+func (s *Server) attestationStatus(tenantID string) map[string]any {
+	cfg := s.attestationConfigFor(tenantID)
+	out := map[string]any{
+		"playPackage":    cfg.PlayPackage,
+		"appAttestAppId": cfg.AppAttestAppID,
+		"appAttestEnv":   map[bool]string{true: "development", false: "production"}[cfg.AppAttestDev],
+		"playCredentialsConfigured": len(cfg.PlaySA) > 0,
+	}
+	if len(cfg.PlaySA) > 0 {
+		var sa struct {
+			ClientEmail string `json:"client_email"`
+		}
+		if json.Unmarshal(cfg.PlaySA, &sa) == nil {
+			out["playClientEmail"] = sa.ClientEmail
+		}
+	}
+	if t, ok := s.getTenant(tenantID); ok {
+		out["source"] = map[string]string{
+			"playCredentials": map[bool]string{true: "tenant", false: "env"}[len(t.PlaySA) > 0],
+			"playPackage":     map[bool]string{true: "tenant", false: "env"}[t.PlayPackage != ""],
+			"appAttest":       map[bool]string{true: "tenant", false: "env"}[t.AppAttestAppID != ""],
+		}
+	}
+	return out
+}
+
 // rotateAppKey replaces the native mobile credential. Cuts off binaries still
 // pinning the old key — fleets recover via app release, which is exactly the
 // point when the old key has leaked.

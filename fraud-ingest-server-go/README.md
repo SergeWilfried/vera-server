@@ -223,8 +223,19 @@ Per-tenant attestation config (preferred): non-secret parts in
 `{"playPackage": "...", "appAttestAppId": "TEAMID.bundle", "appAttestEnv": "production"}`
 — and the Play service-account JSON envelope-encrypted in
 `tenants.play_sa_enc` (AES-256-GCM under MASTER_KEY, same envelope as
-tenant_keys; set by ops — console upload endpoint is a follow-up). Anything
-a tenant leaves unset falls back to the env values.
+tenant_keys). Anything a tenant leaves unset falls back to the env values.
+
+Console endpoints (admin, audited like all mutating console requests):
+`GET /v1/console/attestation` reports the tenant's EFFECTIVE config —
+package, App ID, whether Play credentials are set (service-account email as
+the handle, never the credential) and whether each value comes from the
+tenant registry or the env fallback. `PUT
+/v1/console/attestation/play-credentials` with `{"serviceAccountJson":
+"..."}` validates the credential by actually parsing it, encrypts and
+stores it (write-only: it is never returned); `DELETE` clears it. The
+non-secret parts ride the existing `PATCH /v1/console/settings` under
+`{"attestation": {"playPackage": ..., "appAttestAppId": ...,
+"appAttestEnv": ...}}`.
 
 Attestation verification runs at ingest and embeds a `verdict` into the
 stored payload; `/score` never makes a network call. Play Integrity tokens
