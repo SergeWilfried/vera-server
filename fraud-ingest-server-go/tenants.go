@@ -13,6 +13,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -37,6 +38,13 @@ type Tenant struct {
 	AppKey         string // native-app credential for /v1/collect (X-App-Key)
 	AllowedOrigins []string
 	Keys           []TenantKey // active first
+	// Attestation config (attestation.go). Package/App ID come from
+	// tenant_settings.settings.attestation; the Play service-account JSON is
+	// envelope-encrypted in tenants.play_sa_enc.
+	PlayPackage    string
+	PlaySA         []byte
+	AppAttestAppID string
+	AppAttestDev   bool
 }
 
 // activeKey returns the signing key (mint tokens, sign webhooks).
@@ -94,11 +102,15 @@ func decryptKey(enc []byte) ([]byte, error) {
 
 func (s *Server) loadTenants(ctx context.Context) error {
 	rows, err := queryMaps(ctx, s.pool,
-		`SELECT id, name, coalesce(webhook_url,'') AS webhook_url,
-		        coalesce(site_key,'') AS site_key,
-		        coalesce(app_key,'') AS app_key,
-		        coalesce(allowed_origins,'') AS allowed_origins
-		 FROM tenants WHERE status='active'`)
+		`SELECT t.id, t.name, coalesce(t.webhook_url,'') AS webhook_url,
+		        coalesce(t.site_key,'') AS site_key,
+		        coalesce(t.app_key,'') AS app_key,
+		        coalesce(t.allowed_origins,'') AS allowed_origins,
+		        t.play_sa_enc,
+		        coalesce(ts.settings->'attestation','{}'::jsonb) AS attestation
+		 FROM tenants t
+		 LEFT JOIN tenant_settings ts ON ts.tenant_id = t.id
+		 WHERE t.status='active'`)
 	if err != nil {
 		return err
 	}
@@ -116,8 +128,28 @@ func (s *Server) loadTenants(ctx context.Context) error {
 				origins = append(origins, o)
 			}
 		}
-		out[id] = Tenant{ID: id, Name: name, Webhook: webhook,
+		t := Tenant{ID: id, Name: name, Webhook: webhook,
 			SiteKey: siteKey, AppKey: appKey, AllowedOrigins: origins}
+		if enc, _ := r["play_sa_enc"].([]byte); len(enc) > 0 {
+			if sa, err := decryptKey(enc); err == nil {
+				t.PlaySA = sa
+			} else {
+				log.Printf("tenant %s: play_sa_enc decrypt failed (wrong MASTER_KEY?): %v", id, err)
+			}
+		}
+		if raw, ok := r["attestation"].([]byte); ok {
+			var att struct {
+				PlayPackage    string `json:"playPackage"`
+				AppAttestAppID string `json:"appAttestAppId"`
+				AppAttestEnv   string `json:"appAttestEnv"`
+			}
+			if json.Unmarshal(raw, &att) == nil {
+				t.PlayPackage = att.PlayPackage
+				t.AppAttestAppID = att.AppAttestAppID
+				t.AppAttestDev = att.AppAttestEnv == "development"
+			}
+		}
+		out[id] = t
 	}
 
 	keyRows, err := queryMaps(ctx, s.pool,

@@ -732,19 +732,11 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 			continue
 		}
 		switch {
-		case a.Verdict != nil && a.Verdict.Verified:
-			var fail string
-			switch {
-			case !a.Verdict.NonceOK:
-				fail = "nonce mismatch (possible token replay)"
-			case !hasVerdict(a.Verdict.DeviceVerdicts, "MEETS_DEVICE_INTEGRITY"):
-				fail = "device verdict: " + strings.Join(a.Verdict.DeviceVerdicts, ",")
-			case a.Verdict.AppVerdict != "PLAY_RECOGNIZED":
-				fail = "app verdict: " + a.Verdict.AppVerdict
-			}
-			if fail != "" {
-				add("ATTESTATION_FAILED", "Store attestation failed verification", 40, fail)
-			}
+		case a.Verdict != nil && a.Verdict.Verified && a.Verdict.Fail != "":
+			// Provider-agnostic: the fail reason was determined at ingest
+			// (Play verdict checks, or the full local App Attest validation).
+			add("ATTESTATION_FAILED", "Store attestation failed verification", 40,
+				a.Provider+": "+a.Verdict.Fail)
 		case a.Provider == "PLAY_INTEGRITY" &&
 			(strings.HasPrefix(a.Status, "API_ERROR") || strings.HasPrefix(a.Status, "UNAVAILABLE")):
 			// Not scored for APP_ATTEST: unavailability is expected on

@@ -19,6 +19,11 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS status          text NOT NULL DEFAU
 -- and revocable per tenant. The forward path is device attestation (Play
 -- Integrity / App Attest) riding this same slot.
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS app_key text;
+-- Play Integrity service-account JSON, AES-256-GCM under MASTER_KEY (same
+-- envelope as tenant_keys.key_enc). Non-secret attestation config (package
+-- name, App Attest App ID / environment) lives in
+-- tenant_settings.settings.attestation.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS play_sa_enc bytea;
 
 -- Versioned tenant HMAC keys (SDK batch signatures, session tokens, webhook
 -- signing). key_enc is AES-256-GCM under MASTER_KEY (nonce || ciphertext) —

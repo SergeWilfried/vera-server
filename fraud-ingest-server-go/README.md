@@ -211,19 +211,34 @@ Deps: `pgx/v5`, `golang.org/x/crypto` (scrypt). Everything else stdlib.
     MASTER_KEY              (encrypts tenant HMAC keys at rest — set in prod)
     SDK_KEY                 dev tenant's seeded key (first boot only)
 
-    # Play Integrity verification (attestation.go); both required to enable.
-    # Unset -> PASSIVE_ATTESTATION events are stored unverified and only the
-    # device-reported status is scored.
+    # Attestation env-global FALLBACK (dev / single-tenant); per-tenant
+    # config below takes precedence.
     PLAY_INTEGRITY_CREDENTIALS_FILE   /path/to/service-account.json
     PLAY_INTEGRITY_PACKAGE            com.tenant.app
+    APP_ATTEST_APP_ID                 TEAMID.com.tenant.app
+    APP_ATTEST_ENV                    production   (or development)
 
-Attestation scoring (`PASSIVE_ATTESTATION`): a Google-verified verdict that
-fails device integrity, app recognition, or the session-bound nonce scores
-`ATTESTATION_FAILED` (40, feeds the Account Takeover threat gate); a
+Per-tenant attestation config (preferred): non-secret parts in
+`tenant_settings.settings.attestation` —
+`{"playPackage": "...", "appAttestAppId": "TEAMID.bundle", "appAttestEnv": "production"}`
+— and the Play service-account JSON envelope-encrypted in
+`tenants.play_sa_enc` (AES-256-GCM under MASTER_KEY, same envelope as
+tenant_keys; set by ops — console upload endpoint is a follow-up). Anything
+a tenant leaves unset falls back to the env values.
+
+Attestation verification runs at ingest and embeds a `verdict` into the
+stored payload; `/score` never makes a network call. Play Integrity tokens
+are decoded with Google (`decodeIntegrityToken`); App Attest objects are
+verified locally — CBOR shape, certificate chain to Apple's App Attestation
+root CA (embedded, expires 2045), composite-nonce session binding, key id,
+and authenticator data (App ID hash, counter 0, aaguid environment — a
+development-environment attestation FAILS on a production tenant).
+
+Scoring (`PASSIVE_ATTESTATION`): any verified attestation with a fail reason
+scores `ATTESTATION_FAILED` (40, feeds the Account Takeover threat gate); a
 Play Integrity request that errored or was unavailable on-device scores
-`ATTESTATION_MISSING` (10). iOS App Attest events are stored for now
-(presence only); server-side verification of the Apple attestation object is
-the follow-up.
+`ATTESTATION_MISSING` (10; App Attest unavailability is unscored — expected
+on TestFlight/dev builds and simulators).
 
 ## Tenant key management
 
