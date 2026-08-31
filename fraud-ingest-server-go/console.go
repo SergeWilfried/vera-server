@@ -296,6 +296,54 @@ func (s *Server) consoleRoutes() []consoleRoute {
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				return ok(s.getSettings(ctx, t))
 			}),
+		R("GET", `^/v1/console/counterparty-types$`, rankRead,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				return ok(s.listCounterpartyTypes(ctx, t))
+			}),
+		R("PUT", `^/v1/console/counterparty-types$`, rankAnalyst,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				if err := s.upsertCounterpartyType(ctx, t,
+					str(b, "counterpartyRef"), str(b, "category"), str(b, "label"),
+					"manual", actor.Email); err != nil {
+					return map[string]any{"error": err.Error()}, 400
+				}
+				return map[string]any{"ok": true}, 200
+			}),
+		R("POST", `^/v1/console/counterparty-types/import$`, rankAdmin,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				entries, _ := b["entries"].([]any)
+				if len(entries) == 0 || len(entries) > 1000 {
+					return map[string]any{"error": "entries required (1..1000)"}, 400
+				}
+				imported := 0
+				for _, e := range entries {
+					row, _ := e.(map[string]any)
+					if row == nil {
+						continue
+					}
+					ref, _ := row["counterpartyRef"].(string)
+					cat, _ := row["category"].(string)
+					label, _ := row["label"].(string)
+					if err := s.upsertCounterpartyType(ctx, t, ref, cat, label, "imported", actor.Email); err != nil {
+						return map[string]any{"error": err.Error(), "importedBeforeError": imported}, 400
+					}
+					imported++
+				}
+				return map[string]any{"imported": imported}, 200
+			}),
+		R("POST", `^/v1/console/counterparty-types/delete$`, rankAnalyst,
+			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
+				// POST rather than DELETE-with-path so arbitrary refs never
+				// fight URL encoding, and the dispatcher audits the body.
+				found, err := s.deleteCounterpartyType(ctx, t, str(b, "counterpartyRef"))
+				if err != nil {
+					return nil, 500
+				}
+				if !found {
+					return nil, 404
+				}
+				return map[string]any{"ok": true}, 200
+			}),
 		R("GET", `^/v1/console/risk-preview$`, rankRead,
 			func(ctx context.Context, t string, m []string, q url.Values, b map[string]any, actor Actor) (any, int) {
 				stepUp, _ := strconv.Atoi(q.Get("stepUp"))

@@ -84,6 +84,10 @@ type ScoringCtx struct {
 	// KNOWN_MULE_PAYEE / PAYEE_UNDER_INVESTIGATION.
 	PayeeIntelKind  string
 	PayeeIntelAlert string
+	// Counterparty category for txn.PayeeRef ("" = untyped), resolved by the
+	// handler from the tenant's typing registry. Context, not verdict —
+	// low-weight corroboration, never a driver.
+	PayeeCategory string
 	// Per-tenant, per-currency "high amount, no history" cutoff, resolved for
 	// txn.Currency by the handler. <=0 means unset -> fall back to the global
 	// default (see highAmountCutoff). The history-based AMOUNT_ABOVE_PROFILE
@@ -543,6 +547,21 @@ func scoreSession(ctx *ScoringCtx, txn ScoreTxn) ScoreResult {
 	case "open":
 		add("PAYEE_UNDER_INVESTIGATION", "Payee linked to an open fraud alert", 30,
 			"payee "+trunc(txn.PayeeRef, 12)+" matches open alert "+ctx.PayeeIntelAlert)
+	}
+
+	// Counterparty type — context, not verdict. Betting is legal and crypto
+	// P2P is mostly remittances, so these weigh like VPN_ACTIVE: nothing on
+	// their own, meaningful stacked with escalation, velocity or a fresh SIM.
+	switch ctx.PayeeCategory {
+	case "GAMBLING":
+		add("GAMBLING_PAYEE", "Payment to a gambling-typed counterparty", 10,
+			"payee "+trunc(txn.PayeeRef, 12)+" typed GAMBLING in the tenant registry")
+	case "CRYPTO_P2P":
+		add("CRYPTO_P2P_PAYEE", "Payment to a crypto P2P counterparty", 10,
+			"payee "+trunc(txn.PayeeRef, 12)+" typed CRYPTO_P2P in the tenant registry")
+	case "INFORMAL_FX":
+		add("INFORMAL_FX_PAYEE", "Payment to an informal FX counterparty", 12,
+			"payee "+trunc(txn.PayeeRef, 12)+" typed INFORMAL_FX in the tenant registry")
 	}
 
 	hist := []float64{}

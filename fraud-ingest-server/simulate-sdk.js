@@ -526,6 +526,96 @@ const scenarios = {
   /** Analyst auth + RBAC: bootstrap admin logs in, builds the team, and
    *  every role is probed against the endpoints it must and must not
    *  reach. Also checks logout revocation and legacy service-key limits. */
+  /** Counterparty typing (Go server only) — context, not verdict.
+   *
+   *  Asserts the philosophy in both directions: a payment to a
+   *  gambling-typed payee carries GAMBLING_PAYEE but stays ALLOW on its own
+   *  (the netint/vpn-only assertion for typing); the ledger ratios fire the
+   *  advisory Counterparty Exposure alert when flow concentrates on typed
+   *  counterparties; an untyped counterparty produces nothing. */
+  async ctype() {
+    const api = (path, { method = 'GET', token, body } = {}) =>
+      fetch(BASE + path, {
+        method,
+        headers: { 'Content-Type': 'application/json',
+                   ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      }).then(async r => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+    const adm = await api('/v1/console/login', { method: 'POST',
+      body: { email: 'admin@demobank.cz',
+              password: process.env.CONSOLE_ADMIN_PASSWORD || 'admin-dev-password' } });
+    const admin = adm.body.token;
+
+    const sfx = crypto.randomUUID().slice(0, 6);
+    const betCp = `cp-bet-${sfx}`;
+    const cryptoCp = `cp-crypto-${sfx}`;
+    const imp = await api('/v1/console/counterparty-types/import', { method: 'POST', token: admin,
+      body: { entries: [
+        { counterpartyRef: betCp, category: 'GAMBLING', label: 'Paris sportifs (test)' },
+        { counterpartyRef: cryptoCp, category: 'CRYPTO_P2P', label: 'P2P off-ramp (test)' },
+      ] } });
+    const okImport = imp.status === 200 && imp.body.imported === 2;
+    if (!okImport) { console.log('  ✗ import failed', imp.status, imp.body); process.exitCode = 1; }
+
+    // 1. Score-time: typed payee = corroboration only, never a verdict.
+    const u = newUser();
+    await buildHistory(u, [30, 14, 2], [4000, 5000, 4500]);
+    const s1 = crypto.randomUUID();
+    const t0 = Date.now();
+    await sendBatch(u.install, [
+      { type: 'BIZ_LOGIN_RESULT', sessionId: s1, installId: u.install, userRef: u.ref,
+        ts: t0 + 500, payload: { outcome: 'SUCCESS' }, callSignals: noCall },
+      { type: 'PASSIVE_TOUCH_STROKES', sessionId: s1, installId: u.install, userRef: u.ref,
+        ts: t0 + 4000, payload: { strokes: strokes(6, 115, 340) } },
+    ]);
+    const scored = await sendScore(mintToken(s1, u.install, u.ref),
+      { txnRef: 'TXN-CTYPE', amount: 4600, currency: 'XOF', payeeIsNew: false, payeeRef: betCp });
+    const sig = (scored.signals || []).find((x) => x.code === 'GAMBLING_PAYEE');
+    const okScore = !!sig && scored.decision === 'ALLOW';
+    if (!sig) { console.log('  ✗ GAMBLING_PAYEE signal missing'); process.exitCode = 1; }
+    if (scored.decision !== 'ALLOW') {
+      console.log(`  ✗ a typed payee alone must not challenge (got ${scored.decision} ${scored.riskScore})`);
+      process.exitCode = 1;
+    }
+
+    // 2. Ledger ratio: half the inflow goes straight to betting.
+    const DAY = 86400000;
+    const acct = 'acc-ctype-' + sfx;
+    const mk = () => 'C-' + crypto.randomUUID().slice(0, 8);
+    const feed = [
+      { txnRef: mk(), accountRef: acct, direction: 'IN', amount: 4000000, currency: 'XOF',
+        counterpartyRef: 'cp-salaire', channel: 'BANK_TRANSFER', ts: Date.now() - 20 * DAY },
+      { txnRef: mk(), accountRef: acct, direction: 'IN', amount: 4000000, currency: 'XOF',
+        counterpartyRef: 'cp-salaire', channel: 'BANK_TRANSFER', ts: Date.now() - 10 * DAY },
+      ...[18, 12, 6, 2].map((d) => ({
+        txnRef: mk(), accountRef: acct, direction: 'OUT', amount: 1100000, currency: 'XOF',
+        counterpartyRef: betCp, channel: 'BANK_TRANSFER', ts: Date.now() - d * DAY })),
+    ];
+    const fed = await sendFeed(feed);
+    const alertId = (fed.alerts || [])[0];
+    let okFlow = false;
+    if (!alertId) { console.log('  ✗ gambling ratio did not fire'); process.exitCode = 1; }
+    else {
+      const alert = (await api(`/v1/console/alerts/${alertId}`, { token: admin })).body;
+      const flowSig = (alert.signals || []).find((x) => x.code === 'GAMBLING_FLOW');
+      okFlow = alert.threat_type === 'Counterparty Exposure' && !!flowSig;
+      if (!okFlow) { console.log('  ✗ exposure alert wrong shape', alert.threat_type, (alert.signals || []).map(x => x.code)); process.exitCode = 1; }
+    }
+
+    // 3. Untyped counterparty: same shape, zero alerts.
+    const acct2 = 'acc-ctype2-' + sfx;
+    const feed2 = feed.map((t) => ({ ...t, txnRef: mk(), accountRef: acct2,
+      counterpartyRef: t.counterpartyRef === betCp ? 'cp-untyped-' + sfx : t.counterpartyRef }));
+    const fed2 = await sendFeed(feed2);
+    if ((fed2.alerts || []).length > 0) {
+      console.log('  ✗ untyped counterparty raised an alert'); process.exitCode = 1;
+    }
+
+    console.log(`${okImport && okScore && okFlow && (fed2.alerts || []).length === 0 ? '✓' : '✗'} ctype: ` +
+      `import=2 · typed payee ALLOW (${scored.riskScore}) w/ GAMBLING_PAYEE · ` +
+      `ratio -> ${alertId || '?'} (Counterparty Exposure) · untyped silent`);
+  },
+
   /** KYC drift (Go server only) — the behavioral trigger for perpetual KYC.
    *
    *  Typology #2 of the whitepaper: deposits ramp from ~10M to ~34M per

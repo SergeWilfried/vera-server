@@ -345,3 +345,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail     jsonb NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS audit_log_tenant_idx ON audit_log (tenant_id, id DESC);
+
+-- Counterparty typing: what KIND of counterparty is this? Context, not
+-- verdict — a category feeds low-weight score-time signals and the ledger
+-- ratio analytics (gambling exposure, crypto inflow concentration), and
+-- BENIGN suppresses nothing yet but reserves the false-positive direction.
+-- Refs match bank_txns.counterparty_ref / score payeeRef verbatim, per
+-- tenant. Populated by analysts (single) and admins (bulk import); the
+-- registry IS the product — empty detects nothing.
+CREATE TABLE IF NOT EXISTS counterparty_types (
+  tenant_id        text NOT NULL,
+  counterparty_ref text NOT NULL,
+  category         text NOT NULL,        -- GAMBLING | CRYPTO_P2P | INFORMAL_FX | BENIGN
+  label            text NOT NULL DEFAULT '',
+  source           text NOT NULL DEFAULT 'manual',   -- manual | imported
+  created_by       text NOT NULL DEFAULT '',
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, counterparty_ref)
+);
