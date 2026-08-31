@@ -352,6 +352,15 @@ func (s *Server) createAction(ctx context.Context, tenantID, alertID, kind, note
 		}
 		target = map[string]any{"sessionId": sid}
 		deviceLeg = true
+	case "KYC_REVIEW":
+		// Advisory: hands the account to the bank's re-KYC workflow over the
+		// webhook. No payment is touched and no session is terminated, so
+		// the alert state is left alone below.
+		acct, _ := alert["account_ref"].(string)
+		if acct == "" {
+			return nil, "alert has no account to review", nil
+		}
+		target = map[string]any{"accountRef": acct}
 	default:
 		return nil, "unknown action kind", nil
 	}

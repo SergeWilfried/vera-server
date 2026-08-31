@@ -705,6 +705,7 @@ var webhookTypes = map[string]string{
 	"RELEASE_PAYMENT":   "payment.release",
 	"BLOCK_PAYMENT":     "payment.block",
 	"TERMINATE_SESSION": "session.terminate",
+	"KYC_REVIEW":        "kyc.review",
 }
 
 // deliverAction pushes one action to the tenant's core-banking webhook,

@@ -275,6 +275,20 @@ func (s *Server) handleTransactions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Advisory, not fraud: KYC drift runs outside the detector loop because
+	// it must not gate on the fraud hold band — a drifted customer is
+	// usually legitimate; it is the KYC file that has gone stale.
+	seen := map[string]bool{}
+	for _, t := range txns {
+		if t.Direction != "IN" || seen[t.AccountRef] {
+			continue
+		}
+		seen[t.AccountRef] = true
+		if id, fired := s.checkKycDrift(ctx, tenantID, t.AccountRef, t.UserRef); fired {
+			alerts = append(alerts, id)
+			log.Printf("  ◔ kyc-drift account=%s alert=%s", short(t.AccountRef, 8), id)
+		}
+	}
 	writeJSON(w, 200, map[string]any{
 		"accepted": inserted, "duplicates": len(txns) - inserted, "alerts": alerts})
 }

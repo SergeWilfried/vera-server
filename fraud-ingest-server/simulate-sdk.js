@@ -526,6 +526,68 @@ const scenarios = {
   /** Analyst auth + RBAC: bootstrap admin logs in, builds the team, and
    *  every role is probed against the endpoints it must and must not
    *  reach. Also checks logout revocation and legacy service-key limits. */
+  /** KYC drift (Go server only) — the behavioral trigger for perpetual KYC.
+   *
+   *  Typology #2 of the whitepaper: deposits ramp from ~10M to ~34M per
+   *  month while the KYC file stays untouched. Asserts the full contract:
+   *  a stable account stays silent; sustained inflow ×3 raises an advisory
+   *  'KYC Drift' alert (score 40 — never the fraud bands) carrying the
+   *  KYC_DRIFT evidence, plus a system-initiated KYC_REVIEW action bound
+   *  for the bank's webhook; and the cooldown suppresses a second alert. */
+  async drift() {
+    const DAY = 86400000;
+    const acct = 'acc-drift-' + crypto.randomUUID().slice(0, 8);
+    const mk = () => 'D-' + crypto.randomUUID().slice(0, 8);
+    const inflow = (amount, daysAgo) => ({
+      txnRef: mk(), accountRef: acct, direction: 'IN', amount,
+      currency: 'XOF', counterpartyRef: 'cp-fournisseur', channel: 'BANK_TRANSFER',
+      ts: Date.now() - daysAgo * DAY,
+    });
+
+    // Baseline: ~10M/month across the 90 days before the recent window.
+    const baseline = [95, 82, 75, 65, 58, 48, 41, 35].map((d, i) => inflow(3300000 + i * 10000, d));
+    await sendFeed(baseline);
+    const stable = await sendFeed([inflow(3400000, 2)]);
+    if ((stable.alerts || []).length > 0) {
+      console.log('  ✗ stable account raised an alert:', stable.alerts); process.exitCode = 1;
+    }
+
+    // The ramp: ~34M inside the recent 30 days.
+    const ramp = [24, 18, 12, 6, 1].map((d) => inflow(6800000, d));
+    const got = await sendFeed(ramp);
+    const alertId = (got.alerts || [])[0];
+    if (!alertId) { console.log('  ✗ drift did not fire'); process.exitCode = 1; return; }
+
+    const adm = await fetch(BASE + '/v1/console/login', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@demobank.cz',
+        password: process.env.CONSOLE_ADMIN_PASSWORD || 'admin-dev-password' }) }).then(r => r.json());
+    const H = { Authorization: 'Bearer ' + adm.token };
+    const alert = await fetch(`${BASE}/v1/console/alerts/${alertId}`, { headers: H }).then(r => r.json());
+    const okThreat = alert.threat_type === 'KYC Drift' && alert.score === 40;
+    const sig = (alert.signals || []).find((x) => x.code === 'KYC_DRIFT');
+    if (!okThreat || !sig) {
+      console.log('  ✗ alert shape wrong:', alert.threat_type, alert.score, (alert.signals || []).map(x => x.code));
+      process.exitCode = 1;
+    }
+    const actions = await fetch(`${BASE}/v1/console/actions`, { headers: H }).then(r => r.json());
+    const review = (Array.isArray(actions) ? actions : []).find(
+      (a) => a.alert_id === alertId && a.kind === 'KYC_REVIEW');
+    if (!review) { console.log('  ✗ no KYC_REVIEW action on the alert'); process.exitCode = 1; }
+    else if (review.requested_by !== 'system:kyc-drift') {
+      console.log('  ✗ action not attributed to the system trigger:', review.requested_by); process.exitCode = 1;
+    }
+
+    // Cooldown: more ramped inflow must NOT raise a second drift alert.
+    const again = await sendFeed([inflow(7000000, 0.5)]);
+    if ((again.alerts || []).length > 0) {
+      console.log('  ✗ cooldown failed — second drift alert raised'); process.exitCode = 1;
+    }
+
+    console.log(`✓ drift: stable silent · ramp -> ${alertId} (KYC Drift, 40, ` +
+      `"${sig ? sig.evidence : '?'}") · KYC_REVIEW by system:kyc-drift · cooldown holds`);
+  },
+
   /** Per-tenant policy bands (Go server only) — the risk-appetite dial.
    *
    *  One session shape (new install + new payee, deterministic score 55)
